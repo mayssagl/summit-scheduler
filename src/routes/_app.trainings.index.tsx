@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useRole } from "@/lib/role";
-import { TRAININGS } from "@/lib/mock";
+import { useAuth } from "@/lib/auth";
+import { useAllSessions, useTrainings } from "@/lib/queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,16 +12,33 @@ import { Plus, ArrowUpRight } from "lucide-react";
 export const Route = createFileRoute("/_app/trainings/")({ component: TrainingsList });
 
 function TrainingsList() {
-  const { role } = useRole();
-  const list = useMemo(() => (role === "instructor" ? TRAININGS.filter((t) => t.instructorId === "i1") : role === "dm" ? TRAININGS.filter((t) => t.dmId === "dm1") : TRAININGS), [role]);
+  const { role } = useAuth();
+  const { data: list = [], isLoading } = useTrainings();
+  const { data: sessions = [] } = useAllSessions();
   const [q, setQ] = useState("");
   const [state, setState] = useState("all");
   const [client, setClient] = useState("all");
   const [country, setCountry] = useState("all");
 
+  const nextSessionByTraining = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sessions) {
+      if (s.status === "Done") continue;
+      const current = map.get(s.training_id);
+      if (!current || s.date < current) map.set(s.training_id, s.date);
+    }
+    return map;
+  }, [sessions]);
+
   const clients = Array.from(new Set(list.map((t) => t.client)));
-  const countries = Array.from(new Set(list.map((t) => t.country)));
-  const filtered = list.filter((t) => (state === "all" || t.status === state) && (client === "all" || t.client === client) && (country === "all" || t.country === country) && (q === "" || t.name.toLowerCase().includes(q.toLowerCase())));
+  const countries = Array.from(new Set(list.map((t) => t.country).filter((c): c is string => !!c)));
+  const filtered = list.filter(
+    (t) =>
+      (state === "all" || t.status === state) &&
+      (client === "all" || t.client === client) &&
+      (country === "all" || t.country === country) &&
+      (q === "" || t.name.toLowerCase().includes(q.toLowerCase())),
+  );
 
   return (
     <div className="space-y-6">
@@ -82,17 +99,23 @@ function TrainingsList() {
                     <td className="px-4 py-3 font-medium">{t.name}</td>
                     <td className="px-4 py-3 text-muted-foreground">{t.client}</td>
                     {role === "instructor" ? (
-                      <td className="px-4 py-3 text-muted-foreground">{t.sessions.find((s) => s.status !== "Done")?.date || "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{nextSessionByTraining.get(t.id) || "—"}</td>
                     ) : (
                       <td className="px-4 py-3 text-muted-foreground">{t.country}</td>
                     )}
-                    <td className="px-4 py-3 text-muted-foreground">{t.numStudents}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{t.num_students}</td>
                     <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                     <td className="px-4 py-3 text-right">
                       <Link to="/trainings/$id" params={{ id: t.id }} className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">Open <ArrowUpRight className="h-3.5 w-3.5" /></Link>
                     </td>
                   </tr>
                 ))}
+                {!isLoading && filtered.length === 0 && (
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">No trainings match.</td></tr>
+                )}
+                {isLoading && (
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</td></tr>
+                )}
               </tbody>
             </table>
           </div>

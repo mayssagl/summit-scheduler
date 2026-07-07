@@ -1,4 +1,4 @@
-import { Link, useRouterState, Outlet } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState, Outlet } from "@tanstack/react-router";
 import {
   LayoutDashboard,
   Calendar as CalendarIcon,
@@ -11,9 +11,8 @@ import {
   LogOut,
 } from "lucide-react";
 import { useState } from "react";
-import { useRole, ROLE_LABEL, type Role } from "@/lib/role";
+import { useAuth, type AppRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const BASE = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -27,12 +26,26 @@ const ADMIN_EXTRA = [
   { to: "/team", label: "Team", icon: Users },
 ] as const;
 
+const ROLE_LABEL: Record<AppRole, string> = {
+  admin: "Admin",
+  delivery_manager: "Delivery Manager",
+  instructor: "Instructor",
+};
+
 export function AppShell() {
-  const { role, setRole, user } = useRole();
+  const { role, fullName, user, signOut } = useAuth();
+  const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [open, setOpen] = useState(false);
 
   const items = role === "admin" ? [...BASE, ...ADMIN_EXTRA] : BASE;
+  const displayName = fullName || user?.email || "";
+  const initials = displayName
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join("") || "?";
 
   const NavInner = (
     <nav className="flex flex-col gap-1 px-3">
@@ -86,32 +99,26 @@ export function AppShell() {
           <div className="grid h-8 w-8 place-items-center rounded-md bg-primary font-bold text-primary-foreground">T</div>
           <span className="text-lg font-semibold">TrainOps</span>
         </div>
-        <div className="border-b border-[color:var(--sidebar-border)] px-4 py-3">
-          <p className="mb-1 text-[10px] uppercase tracking-wider text-[color:var(--sidebar-foreground)]/60">View as</p>
-          <Select value={role} onValueChange={(v) => setRole(v as Role)}>
-            <SelectTrigger className="h-9 w-full border-[color:var(--sidebar-border)] bg-[color:var(--sidebar-accent)] text-[color:var(--sidebar-foreground)]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="admin">{ROLE_LABEL.admin}</SelectItem>
-              <SelectItem value="dm">{ROLE_LABEL.dm}</SelectItem>
-              <SelectItem value="instructor">{ROLE_LABEL.instructor}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
         <div className="flex-1 overflow-y-auto py-4">{NavInner}</div>
         <div className="border-t border-[color:var(--sidebar-border)] p-4">
           <div className="flex items-center gap-3 text-[color:var(--sidebar-foreground)]">
             <div className="grid h-9 w-9 place-items-center rounded-full bg-[color:var(--sidebar-accent)] text-sm font-semibold">
-              {user.name.split(" ").map((p) => p[0]).join("")}
+              {initials}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{user.name}</p>
-              <p className="truncate text-xs text-[color:var(--sidebar-foreground)]/60">{ROLE_LABEL[role]}</p>
+              <p className="truncate text-sm font-medium">{displayName}</p>
+              <p className="truncate text-xs text-[color:var(--sidebar-foreground)]/60">{role ? ROLE_LABEL[role] : ""}</p>
             </div>
-            <Link to="/auth/signin" className="rounded-md p-2 hover:bg-[color:var(--sidebar-accent)]" title="Sign out">
+            <button
+              onClick={async () => {
+                await signOut();
+                navigate({ to: "/login" });
+              }}
+              className="rounded-md p-2 hover:bg-[color:var(--sidebar-accent)]"
+              title="Sign out"
+            >
               <LogOut className="h-4 w-4" />
-            </Link>
+            </button>
           </div>
         </div>
       </aside>

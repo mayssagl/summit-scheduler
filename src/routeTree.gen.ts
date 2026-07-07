@@ -9,10 +9,10 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as ActivateRouteImport } from './routes/activate'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as AuthSigninRouteImport } from './routes/auth.signin'
-import { Route as AuthActivateRouteImport } from './routes/auth.activate'
 import { Route as AppTeamRouteImport } from './routes/_app.team'
 import { Route as AppSurveysRouteImport } from './routes/_app.surveys'
 import { Route as AppPayoutRouteImport } from './routes/_app.payout'
@@ -26,6 +26,16 @@ import { Route as SCertificateTokenRouteImport } from './routes/s.certificate.$t
 import { Route as AppTrainingsNewRouteImport } from './routes/_app.trainings.new'
 import { Route as AppTrainingsIdRouteImport } from './routes/_app.trainings.$id'
 
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ActivateRoute = ActivateRouteImport.update({
+  id: '/activate',
+  path: '/activate',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppRoute = AppRouteImport.update({
   id: '/_app',
   getParentRoute: () => rootRouteImport,
@@ -33,16 +43,6 @@ const AppRoute = AppRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthSigninRoute = AuthSigninRouteImport.update({
-  id: '/auth/signin',
-  path: '/auth/signin',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthActivateRoute = AuthActivateRouteImport.update({
-  id: '/auth/activate',
-  path: '/auth/activate',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppTeamRoute = AppTeamRouteImport.update({
@@ -108,13 +108,13 @@ const AppTrainingsIdRoute = AppTrainingsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/activate': typeof ActivateRoute
+  '/login': typeof LoginRoute
   '/calendar': typeof AppCalendarRoute
   '/dashboard': typeof AppDashboardRoute
   '/payout': typeof AppPayoutRoute
   '/surveys': typeof AppSurveysRoute
   '/team': typeof AppTeamRoute
-  '/auth/activate': typeof AuthActivateRoute
-  '/auth/signin': typeof AuthSigninRoute
   '/trainings/$id': typeof AppTrainingsIdRoute
   '/trainings/new': typeof AppTrainingsNewRoute
   '/s/certificate/$token': typeof SCertificateTokenRoute
@@ -125,13 +125,13 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/activate': typeof ActivateRoute
+  '/login': typeof LoginRoute
   '/calendar': typeof AppCalendarRoute
   '/dashboard': typeof AppDashboardRoute
   '/payout': typeof AppPayoutRoute
   '/surveys': typeof AppSurveysRoute
   '/team': typeof AppTeamRoute
-  '/auth/activate': typeof AuthActivateRoute
-  '/auth/signin': typeof AuthSigninRoute
   '/trainings/$id': typeof AppTrainingsIdRoute
   '/trainings/new': typeof AppTrainingsNewRoute
   '/s/certificate/$token': typeof SCertificateTokenRoute
@@ -144,13 +144,13 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
+  '/activate': typeof ActivateRoute
+  '/login': typeof LoginRoute
   '/_app/calendar': typeof AppCalendarRoute
   '/_app/dashboard': typeof AppDashboardRoute
   '/_app/payout': typeof AppPayoutRoute
   '/_app/surveys': typeof AppSurveysRoute
   '/_app/team': typeof AppTeamRoute
-  '/auth/activate': typeof AuthActivateRoute
-  '/auth/signin': typeof AuthSigninRoute
   '/_app/trainings/$id': typeof AppTrainingsIdRoute
   '/_app/trainings/new': typeof AppTrainingsNewRoute
   '/s/certificate/$token': typeof SCertificateTokenRoute
@@ -163,13 +163,13 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/activate'
+    | '/login'
     | '/calendar'
     | '/dashboard'
     | '/payout'
     | '/surveys'
     | '/team'
-    | '/auth/activate'
-    | '/auth/signin'
     | '/trainings/$id'
     | '/trainings/new'
     | '/s/certificate/$token'
@@ -180,13 +180,13 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/activate'
+    | '/login'
     | '/calendar'
     | '/dashboard'
     | '/payout'
     | '/surveys'
     | '/team'
-    | '/auth/activate'
-    | '/auth/signin'
     | '/trainings/$id'
     | '/trainings/new'
     | '/s/certificate/$token'
@@ -198,13 +198,13 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_app'
+    | '/activate'
+    | '/login'
     | '/_app/calendar'
     | '/_app/dashboard'
     | '/_app/payout'
     | '/_app/surveys'
     | '/_app/team'
-    | '/auth/activate'
-    | '/auth/signin'
     | '/_app/trainings/$id'
     | '/_app/trainings/new'
     | '/s/certificate/$token'
@@ -217,8 +217,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
-  AuthActivateRoute: typeof AuthActivateRoute
-  AuthSigninRoute: typeof AuthSigninRoute
+  ActivateRoute: typeof ActivateRoute
+  LoginRoute: typeof LoginRoute
   SCertificateTokenRoute: typeof SCertificateTokenRoute
   SSurveyL1TokenRoute: typeof SSurveyL1TokenRoute
   SSurveyL3TokenRoute: typeof SSurveyL3TokenRoute
@@ -227,6 +227,20 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/activate': {
+      id: '/activate'
+      path: '/activate'
+      fullPath: '/activate'
+      preLoaderRoute: typeof ActivateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app': {
       id: '/_app'
       path: ''
@@ -239,20 +253,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/auth/signin': {
-      id: '/auth/signin'
-      path: '/auth/signin'
-      fullPath: '/auth/signin'
-      preLoaderRoute: typeof AuthSigninRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/auth/activate': {
-      id: '/auth/activate'
-      path: '/auth/activate'
-      fullPath: '/auth/activate'
-      preLoaderRoute: typeof AuthActivateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/team': {
@@ -369,8 +369,8 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
-  AuthActivateRoute: AuthActivateRoute,
-  AuthSigninRoute: AuthSigninRoute,
+  ActivateRoute: ActivateRoute,
+  LoginRoute: LoginRoute,
   SCertificateTokenRoute: SCertificateTokenRoute,
   SSurveyL1TokenRoute: SSurveyL1TokenRoute,
   SSurveyL3TokenRoute: SSurveyL3TokenRoute,

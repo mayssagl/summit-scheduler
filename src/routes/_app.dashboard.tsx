@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useRole } from "@/lib/role";
-import { TRAININGS } from "@/lib/mock";
+import { useAuth } from "@/lib/auth";
+import { useAllSessions, useTrainings } from "@/lib/queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,31 +12,47 @@ import { Button } from "@/components/ui/button";
 export const Route = createFileRoute("/_app/dashboard")({ component: Dashboard });
 
 function Dashboard() {
-  const { role } = useRole();
-  const all = useMemo(() => (role === "dm" ? TRAININGS.filter((t) => t.dmId === "dm1") : role === "instructor" ? TRAININGS.filter((t) => t.instructorId === "i1") : TRAININGS), [role]);
+  const { role } = useAuth();
+  const { data: all = [], isLoading: trainingsLoading } = useTrainings();
+  const { data: sessions = [] } = useAllSessions();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
 
-  const filtered = all.filter((t) => (status === "all" || t.status === status) && (q === "" || t.name.toLowerCase().includes(q.toLowerCase()) || t.client.toLowerCase().includes(q.toLowerCase())));
+  const filtered = all.filter(
+    (t) =>
+      (status === "all" || t.status === status) &&
+      (q === "" || t.name.toLowerCase().includes(q.toLowerCase()) || t.client.toLowerCase().includes(q.toLowerCase())),
+  );
   const active = all.filter((t) => t.status === "Active").length;
   const pending = all.filter((t) => t.status === "Pending").length;
   const npsValues = all.filter((t) => t.nps > 0).map((t) => t.nps);
   const avgNps = npsValues.length ? Math.round(npsValues.reduce((a, b) => a + b, 0) / npsValues.length) : 0;
-  const surveyValues = all.filter((t) => t.surveyRate > 0).map((t) => t.surveyRate);
+  const surveyValues = all.filter((t) => t.survey_rate > 0).map((t) => t.survey_rate);
   const surveyRate = surveyValues.length ? Math.round(surveyValues.reduce((a, b) => a + b, 0) / surveyValues.length) : 0;
 
-  const nextUp = all.flatMap((t) => t.sessions.filter((s) => s.status !== "Done").map((s) => ({ t, s }))).sort((a, b) => a.s.date.localeCompare(b.s.date))[0];
-  const sessionsThisWeek = all.reduce((acc, t) => acc + t.sessions.filter((s) => {
-    const d = new Date(s.date); const now = new Date();
+  const trainingsById = useMemo(() => new Map(all.map((t) => [t.id, t])), [all]);
+  const nextUp = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.status !== "Done" && trainingsById.has(s.training_id))
+        .map((s) => ({ s, t: trainingsById.get(s.training_id)! }))
+        .sort((a, b) => a.s.date.localeCompare(b.s.date))[0],
+    [sessions, trainingsById],
+  );
+  const sessionsThisWeek = sessions.filter((s) => {
+    const d = new Date(s.date);
+    const now = new Date();
     const diff = (d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
     return diff >= -1 && diff <= 7;
-  }).length, 0);
+  }).length;
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">Overview of {role === "admin" ? "all trainings across the org" : role === "dm" ? "your trainings" : "your assigned sessions"}.</p>
+        <p className="text-sm text-muted-foreground">
+          Overview of {role === "admin" ? "all trainings across the org" : role === "delivery_manager" ? "your trainings" : "your assigned sessions"}.
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -45,7 +61,7 @@ function Dashboard() {
             <StatCard label="Trainings" value={all.length} icon={GraduationCap} />
             <StatCard label="Sessions this week" value={sessionsThisWeek} icon={CalendarCheck} />
             <StatCard label="My NPS" value={avgNps} icon={Sparkles} />
-            <StatCard label="Students" value={all.reduce((a, t) => a + t.numStudents, 0)} icon={Users} />
+            <StatCard label="Students" value={all.reduce((a, t) => a + t.num_students, 0)} icon={Users} />
           </>
         ) : (
           <>
@@ -63,7 +79,7 @@ function Dashboard() {
           <CardContent className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="font-medium">{nextUp.t.name} <span className="text-muted-foreground font-normal">· {nextUp.t.client}</span></p>
-              <p className="mt-0.5 text-sm text-muted-foreground">{nextUp.s.date} · {nextUp.s.start}–{nextUp.s.end} · {nextUp.s.venue}</p>
+              <p className="mt-0.5 text-sm text-muted-foreground">{nextUp.s.date} · {nextUp.s.start_time}–{nextUp.s.end_time} · {nextUp.s.venue}</p>
             </div>
             <Button asChild><Link to="/trainings/$id" params={{ id: nextUp.t.id }}>Take attendance</Link></Button>
           </CardContent>
@@ -107,7 +123,7 @@ function Dashboard() {
                     <td className="px-4 py-3 font-medium">{t.name}</td>
                     <td className="px-4 py-3 text-muted-foreground">{t.client}</td>
                     <td className="px-4 py-3 text-muted-foreground">{t.country}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{t.startDate ? `${t.startDate} → ${t.endDate}` : "—"}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{t.start_date ? `${t.start_date} → ${t.end_date}` : "—"}</td>
                     <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                     <td className="px-4 py-3 text-right">
                       <Link to="/trainings/$id" params={{ id: t.id }} className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
@@ -116,8 +132,11 @@ function Dashboard() {
                     </td>
                   </tr>
                 ))}
-                {filtered.length === 0 && (
+                {!trainingsLoading && filtered.length === 0 && (
                   <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">No trainings match.</td></tr>
+                )}
+                {trainingsLoading && (
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</td></tr>
                 )}
               </tbody>
             </table>

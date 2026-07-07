@@ -1,7 +1,36 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { useState } from "react";
-import { useRole } from "@/lib/role";
-import { getTraining, type Training } from "@/lib/mock";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useMemo, useRef, useState, type FormEvent } from "react";
+import { toast } from "sonner";
+import { useAuth, type AppRole } from "@/lib/auth";
+import {
+  useAddResource,
+  useAddSession,
+  useAddStudents,
+  useAddTestQuestion,
+  useDeleteTestQuestion,
+  useGenerateGroupInsights,
+  useGroupInsights,
+  useIssueCertificates,
+  usePublishTestAttempts,
+  useSendSurveys,
+  useSetAttendance,
+  useSurveyQuestions,
+  useSurveyResponses,
+  useTestAttempts,
+  useTraining,
+  useTrainingAttendance,
+  useTrainingCertificates,
+  useTrainingResources,
+  useTrainingSessions,
+  useTrainingStudents,
+  useTrainingTests,
+  useUpdateCertificateTemplate,
+  uploadTrainingFile,
+  type GroupInsightsContent,
+  type StudentRow,
+  type TrainingWithInstructor,
+} from "@/lib/queries";
+import { downloadCertificate, downloadCertificatesBundle, downloadGroupReport } from "@/lib/export-html";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,16 +40,19 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+function copyShareLink(path: string) {
+  const url = `${window.location.origin}${path}`;
+  navigator.clipboard.writeText(url).then(
+    () => toast.success("Link copied to clipboard"),
+    () => toast.error("Couldn't copy link"),
+  );
+}
+
 export const Route = createFileRoute("/_app/trainings/$id")({
-  loader: ({ params }) => {
-    const t = getTraining(params.id);
-    if (!t) throw notFound();
-    return { training: t };
-  },
   component: TrainingDetail,
 });
 
@@ -28,10 +60,24 @@ const ADMIN_TABS = ["Overview","Sessions","Students","Attendance","Certificates"
 const INSTRUCTOR_TABS = ["Sessions","Students","Attendance","Tests","Resources"] as const;
 
 function TrainingDetail() {
-  const { training } = Route.useLoaderData();
-  const { role } = useRole();
+  const { id } = Route.useParams();
+  const { role } = useAuth();
+  const { data: training, isLoading } = useTraining(id);
   const tabs = role === "instructor" ? INSTRUCTOR_TABS : ADMIN_TABS;
   const [tab, setTab] = useState<string>(tabs[0]);
+  const [attendanceSessionId, setAttendanceSessionId] = useState<string | undefined>(undefined);
+
+  if (isLoading) {
+    return <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>;
+  }
+  if (!training) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" className="w-fit" asChild><Link to="/trainings"><ArrowLeft className="mr-1 h-4 w-4" />All trainings</Link></Button>
+        <p className="py-16 text-center text-sm text-muted-foreground">Training not found.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -65,14 +111,30 @@ function TrainingDetail() {
           </>
         )}
 
-        <TabsContent value="Sessions"><Sessions t={training} /></TabsContent>
-        <TabsContent value="Students"><Students t={training} /></TabsContent>
-        <TabsContent value="Attendance"><Attendance t={training} editable={role === "instructor"} /></TabsContent>
+        <TabsContent value="Sessions">
+          <Sessions
+            t={training}
+            role={role}
+            onTakeAttendance={(sessionId) => {
+              setAttendanceSessionId(sessionId);
+              setTab("Attendance");
+            }}
+          />
+        </TabsContent>
+        <TabsContent value="Students"><Students t={training} role={role} /></TabsContent>
+        <TabsContent value="Attendance">
+          <Attendance
+            t={training}
+            editable={role === "instructor"}
+            picked={attendanceSessionId}
+            onPickedChange={setAttendanceSessionId}
+          />
+        </TabsContent>
 
         {role === "instructor" && (
           <>
-            <TabsContent value="Tests"><Tests /></TabsContent>
-            <TabsContent value="Resources"><Resources /></TabsContent>
+            <TabsContent value="Tests"><Tests t={training} /></TabsContent>
+            <TabsContent value="Resources"><Resources t={training} /></TabsContent>
           </>
         )}
       </Tabs>
@@ -80,22 +142,27 @@ function TrainingDetail() {
   );
 }
 
-function Overview({ t }: { t: Training }) {
-  const enrolled = t.students.filter((s) => s.status === "Active").length;
+function Overview({ t }: { t: TrainingWithInstructor }) {
+  const { data: sessions = [] } = useTrainingSessions(t.id);
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const enrolled = students.filter((s) => s.status === "Active").length;
+  const initials = t.instructor_name
+    ? t.instructor_name.split(" ").map((p) => p[0]).join("")
+    : "—";
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <Card>
         <CardHeader><CardTitle className="text-base">Instructor</CardTitle></CardHeader>
         <CardContent className="flex items-center gap-3">
-          <div className="grid h-12 w-12 place-items-center rounded-full bg-primary/10 font-semibold text-primary">{t.instructor.split(" ").map((p) => p[0]).join("")}</div>
-          <div><p className="font-medium">{t.instructor}</p><p className="text-xs text-muted-foreground">Lead instructor</p></div>
+          <div className="grid h-12 w-12 place-items-center rounded-full bg-primary/10 font-semibold text-primary">{initials}</div>
+          <div><p className="font-medium">{t.instructor_name ?? "Unassigned"}</p><p className="text-xs text-muted-foreground">Lead instructor</p></div>
         </CardContent>
       </Card>
       <Card>
         <CardHeader><CardTitle className="text-base">Schedule</CardTitle></CardHeader>
         <CardContent className="space-y-1 text-sm">
-          <p><span className="text-muted-foreground">Dates:</span> {t.startDate ? `${t.startDate} → ${t.endDate}` : "—"}</p>
-          <p><span className="text-muted-foreground">Sessions:</span> {t.sessions.length}</p>
+          <p><span className="text-muted-foreground">Dates:</span> {t.start_date ? `${t.start_date} → ${t.end_date}` : "—"}</p>
+          <p><span className="text-muted-foreground">Sessions:</span> {sessions.length}</p>
           <p><span className="text-muted-foreground">Venue:</span> {t.venue}</p>
           <p><span className="text-muted-foreground">Language:</span> {t.language}</p>
         </CardContent>
@@ -103,21 +170,21 @@ function Overview({ t }: { t: Training }) {
       <Card>
         <CardHeader><CardTitle className="text-base">PO & Payout</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <p><span className="text-muted-foreground">PO ref:</span> {t.poRef}</p>
-          <p><span className="text-muted-foreground">PO value:</span> <span className="font-semibold">{t.poValue.toLocaleString()}</span></p>
-          <p><span className="text-muted-foreground">Payout:</span> <span className="font-semibold">{Math.round(t.poValue * 0.35).toLocaleString()}</span></p>
+          <p><span className="text-muted-foreground">PO ref:</span> {t.po_ref || "—"}</p>
+          <p><span className="text-muted-foreground">PO value:</span> <span className="font-semibold">{(t.po_value ?? 0).toLocaleString()}</span></p>
+          <p><span className="text-muted-foreground">Payout:</span> <span className="font-semibold">{Math.round((t.po_value ?? 0) * 0.35).toLocaleString()}</span></p>
         </CardContent>
       </Card>
       <Card className="lg:col-span-3">
         <CardHeader><CardTitle className="text-base">Progress</CardTitle></CardHeader>
         <CardContent className="grid gap-6 sm:grid-cols-2">
           <div>
-            <div className="mb-1.5 flex justify-between text-sm"><span>Enrollment</span><span className="font-medium">{enrolled}/{t.numStudents}</span></div>
-            <Progress value={(enrolled / t.numStudents) * 100} />
+            <div className="mb-1.5 flex justify-between text-sm"><span>Enrollment</span><span className="font-medium">{enrolled}/{t.num_students}</span></div>
+            <Progress value={t.num_students ? (enrolled / t.num_students) * 100 : 0} />
           </div>
           <div>
-            <div className="mb-1.5 flex justify-between text-sm"><span>Attendance</span><span className="font-medium">{t.attendanceRate}%</span></div>
-            <Progress value={t.attendanceRate} />
+            <div className="mb-1.5 flex justify-between text-sm"><span>Attendance</span><span className="font-medium">{t.attendance_rate}%</span></div>
+            <Progress value={t.attendance_rate} />
           </div>
         </CardContent>
       </Card>
@@ -125,37 +192,128 @@ function Overview({ t }: { t: Training }) {
   );
 }
 
-function Sessions({ t }: { t: Training }) {
-  const { role } = useRole();
+const DEFAULT_TIMEZONE = "Europe/Paris";
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function nextWeekdayOnOrAfter(from: Date, targetDayIndex: number) {
+  const d = new Date(from);
+  const currentDayIndex = (d.getDay() + 6) % 7; // Mon=0
+  d.setDate(d.getDate() + ((targetDayIndex - currentDayIndex + 7) % 7));
+  return d;
+}
+
+function iso(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+function Sessions({
+  t,
+  role,
+  onTakeAttendance,
+}: {
+  t: TrainingWithInstructor;
+  role: AppRole | null;
+  onTakeAttendance: (sessionId: string) => void;
+}) {
+  const { data: sessions = [] } = useTrainingSessions(t.id);
+  const addSession = useAddSession(t.id);
   const [mode, setMode] = useState<"single" | "recurring">("single");
+  const [form, setForm] = useState({ date: "", start_time: "09:00", end_time: "17:00", venue: "", module: "" });
+  const [weeks, setWeeks] = useState(4);
+  const [recurring, setRecurring] = useState([{ day: "Mon", start: "09:00", end: "12:00", venue: "" }]);
+  const [generating, setGenerating] = useState(false);
+
+  async function handleAdd() {
+    if (!form.date) return;
+    await addSession.mutateAsync({ ...form, timezone: DEFAULT_TIMEZONE });
+    setForm({ date: "", start_time: "09:00", end_time: "17:00", venue: "", module: "" });
+  }
+
+  async function handleGenerate() {
+    const anchor = t.start_date ? new Date(t.start_date) : new Date();
+    setGenerating(true);
+    try {
+      for (const row of recurring) {
+        const dayIndex = WEEKDAYS.indexOf(row.day);
+        const first = nextWeekdayOnOrAfter(anchor, dayIndex);
+        for (let week = 0; week < weeks; week++) {
+          const d = new Date(first);
+          d.setDate(d.getDate() + week * 7);
+          await addSession.mutateAsync({
+            date: iso(d),
+            start_time: row.start,
+            end_time: row.end,
+            timezone: DEFAULT_TIMEZONE,
+            venue: row.venue,
+            module: "",
+          });
+        }
+      }
+      toast.success(`Generated ${weeks * recurring.length} sessions`);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {role !== "instructor" && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Add sessions</CardTitle>
-            <Tabs value={mode} onValueChange={(v) => setMode(v as any)}>
+            <Tabs value={mode} onValueChange={(v) => setMode(v as "single" | "recurring")}>
               <TabsList><TabsTrigger value="single">Single</TabsTrigger><TabsTrigger value="recurring">Recurring</TabsTrigger></TabsList>
             </Tabs>
           </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-5">
+          <CardContent>
             {mode === "single" ? (
-              <>
-                <Input type="date" /><Input type="time" defaultValue="09:00" /><Input type="time" defaultValue="17:00" /><Input placeholder="Venue" /><Button>Add</Button>
-              </>
+              <div className="grid gap-3 sm:grid-cols-5">
+                <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                <Input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
+                <Input type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} />
+                <Input placeholder="Venue" value={form.venue} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
+                <Button onClick={handleAdd} disabled={!form.date || addSession.isPending}>Add</Button>
+              </div>
             ) : (
-              <>
-                <Input type="number" placeholder="Weeks" defaultValue={4} className="sm:col-span-1" />
-                <p className="text-sm text-muted-foreground sm:col-span-3">Configure weekday rows below.</p>
-                <Button>Generate</Button>
-              </>
+              <div className="space-y-3">
+                <div className="flex items-end gap-3">
+                  <div className="space-y-1.5"><Label>Number of weeks</Label><Input type="number" value={weeks} onChange={(e) => setWeeks(Number(e.target.value))} className="w-32" /></div>
+                </div>
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                      <tr><th className="px-3 py-2 text-left">Weekday</th><th className="px-3 py-2 text-left">Start</th><th className="px-3 py-2 text-left">End</th><th className="px-3 py-2 text-left">Venue</th><th /></tr>
+                    </thead>
+                    <tbody>
+                      {recurring.map((r, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="px-3 py-2">
+                            <Select value={r.day} onValueChange={(v) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, day: v } : x)))}>
+                              <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                              <SelectContent>{WEEKDAYS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
+                            </Select>
+                          </td>
+                          <td className="px-3 py-2"><Input type="time" value={r.start} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, start: e.target.value } : x)))} className="w-32" /></td>
+                          <td className="px-3 py-2"><Input type="time" value={r.end} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, end: e.target.value } : x)))} className="w-32" /></td>
+                          <td className="px-3 py-2"><Input value={r.venue} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, venue: e.target.value } : x)))} placeholder="Venue" /></td>
+                          <td className="px-3 py-2"><Button variant="ghost" size="icon" onClick={() => setRecurring(recurring.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex justify-between">
+                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
+                  <Button onClick={handleGenerate} disabled={generating}>{generating ? "Generating…" : "Generate"}</Button>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
       )}
       <Card>
         <CardContent className="p-0">
-          {t.sessions.length === 0 ? (
+          {sessions.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">No sessions scheduled yet.</div>
           ) : (
             <table className="w-full text-sm">
@@ -163,14 +321,14 @@ function Sessions({ t }: { t: Training }) {
                 <tr><th className="px-4 py-3 text-left font-medium">Date</th><th className="px-4 py-3 text-left font-medium">Time</th><th className="px-4 py-3 text-left font-medium">Venue</th><th className="px-4 py-3 text-left font-medium">Module</th><th className="px-4 py-3 text-left font-medium">Status</th>{role === "instructor" && <th />}</tr>
               </thead>
               <tbody>
-                {t.sessions.map((s) => (
+                {sessions.map((s) => (
                   <tr key={s.id} className="border-t">
                     <td className="px-4 py-3">{s.date}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.start} – {s.end}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{s.start_time} – {s.end_time}</td>
                     <td className="px-4 py-3 text-muted-foreground">{s.venue}</td>
                     <td className="px-4 py-3 text-muted-foreground">{s.module}</td>
                     <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Done" ? "bg-muted text-muted-foreground ring-border" : s.status === "Today" ? "bg-primary/15 text-primary ring-primary/30" : "bg-secondary text-secondary-foreground ring-border")}>{s.status}</span></td>
-                    {role === "instructor" && <td className="px-4 py-3 text-right"><Button size="sm" variant="outline">Take attendance</Button></td>}
+                    {role === "instructor" && <td className="px-4 py-3 text-right"><Button size="sm" variant="outline" onClick={() => onTakeAttendance(s.id)}>Take attendance</Button></td>}
                   </tr>
                 ))}
               </tbody>
@@ -182,15 +340,74 @@ function Sessions({ t }: { t: Training }) {
   );
 }
 
-function Students({ t }: { t: Training }) {
-  const { role } = useRole();
-  const active = t.students.filter((s) => s.status === "Active").length;
+function AddStudentDialog({ trainingId }: { trainingId: string }) {
+  const addStudents = useAddStudents(trainingId);
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [dept, setDept] = useState("");
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    await addStudents.mutateAsync([{ name, email, dept }]);
+    setName(""); setEmail(""); setDept("");
+    setOpen(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button size="sm"><Plus className="mr-1 h-4 w-4" />Add</Button></DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Add student</DialogTitle></DialogHeader>
+        <form className="space-y-3" onSubmit={handleSubmit}>
+          <div className="space-y-1.5"><Label>Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} required /></div>
+          <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
+          <div className="space-y-1.5"><Label>Department</Label><Input value={dept} onChange={(e) => setDept(e.target.value)} /></div>
+          <DialogFooter><Button type="submit" disabled={addStudents.isPending}>Add student</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function parseStudentsCsv(text: string): { name: string; email: string; dept: string }[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^name\s*,\s*email/i.test(line))
+    .map((line) => {
+      const [name = "", email = "", dept = ""] = line.split(",").map((c) => c.trim());
+      return { name, email, dept };
+    })
+    .filter((row) => row.name && row.email);
+}
+
+function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null }) {
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const addStudents = useAddStudents(t.id);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const active = students.filter((s) => s.status === "Active").length;
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const rows = parseStudentsCsv(text);
+    if (rows.length > 0) await addStudents.mutateAsync(rows);
+    e.target.value = "";
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-base">Students <span className="ml-2 text-sm font-normal text-muted-foreground">{active} of {t.numStudents}</span></CardTitle>
+        <CardTitle className="text-base">Students <span className="ml-2 text-sm font-normal text-muted-foreground">{active} of {t.num_students}</span></CardTitle>
         {role !== "instructor" && (
-          <div className="flex gap-2"><Button variant="outline" size="sm"><Upload className="mr-1 h-4 w-4" />Import CSV</Button><Button size="sm"><Plus className="mr-1 h-4 w-4" />Add</Button></div>
+          <div className="flex gap-2">
+            <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+            <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}><Upload className="mr-1 h-4 w-4" />Import CSV</Button>
+            <AddStudentDialog trainingId={t.id} />
+          </div>
         )}
       </CardHeader>
       <CardContent className="p-0">
@@ -199,12 +416,12 @@ function Students({ t }: { t: Training }) {
             <tr><th className="px-4 py-3 text-left font-medium">Name</th><th className="px-4 py-3 text-left font-medium">Email</th><th className="px-4 py-3 text-left font-medium">Dept</th>{role === "instructor" && <th className="px-4 py-3 text-left font-medium">Attendance</th>}<th className="px-4 py-3 text-left font-medium">Status</th></tr>
           </thead>
           <tbody>
-            {t.students.map((s) => (
+            {students.map((s) => (
               <tr key={s.id} className="border-t">
                 <td className="px-4 py-3 font-medium">{s.name}</td>
                 <td className="px-4 py-3 text-muted-foreground">{s.email}</td>
                 <td className="px-4 py-3 text-muted-foreground">{s.dept}</td>
-                {role === "instructor" && <td className="px-4 py-3 text-muted-foreground">{s.attendance}%</td>}
+                {role === "instructor" && <td className="px-4 py-3 text-muted-foreground">{s.attendance_pct}%</td>}
                 <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Active" ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}>{s.status}</span></td>
               </tr>
             ))}
@@ -215,15 +432,38 @@ function Students({ t }: { t: Training }) {
   );
 }
 
-function Attendance({ t, editable }: { t: Training; editable: boolean }) {
-  const sessions = t.sessions.length ? t.sessions : [{ id: "demo", date: "—" } as any];
-  const [picked, setPicked] = useState(sessions[0].id);
+function Attendance({
+  t,
+  editable,
+  picked,
+  onPickedChange,
+}: {
+  t: TrainingWithInstructor;
+  editable: boolean;
+  picked: string | undefined;
+  onPickedChange: (sessionId: string) => void;
+}) {
+  const { data: sessions = [] } = useTrainingSessions(t.id);
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: attendance = [] } = useTrainingAttendance(t.id);
+  const setAttendance = useSetAttendance(t.id);
+
+  const attendanceMap = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const a of attendance) map.set(`${a.session_id}:${a.student_id}`, a.present);
+    return map;
+  }, [attendance]);
+
+  const orderedSessions = picked ? [...sessions].sort((a, b) => (a.id === picked ? -1 : b.id === picked ? 1 : 0)) : sessions;
+  const visibleSessions = orderedSessions.slice(0, 5);
+  const pickerValue = picked ?? sessions[0]?.id ?? "";
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">Attendance</CardTitle>
-        <Select value={picked} onValueChange={setPicked}>
-          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+        <Select value={pickerValue} onValueChange={onPickedChange}>
+          <SelectTrigger className="w-56"><SelectValue placeholder="No sessions yet" /></SelectTrigger>
           <SelectContent>{sessions.map((s) => <SelectItem key={s.id} value={s.id}>{s.date}</SelectItem>)}</SelectContent>
         </Select>
       </CardHeader>
@@ -233,29 +473,42 @@ function Attendance({ t, editable }: { t: Training; editable: boolean }) {
             <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 text-left font-medium">Student</th>
-                {t.sessions.slice(0, 5).map((s) => <th key={s.id} className="px-3 py-3 text-center font-medium">{s.date.slice(5)}</th>)}
+                {visibleSessions.map((s) => (
+                  <th key={s.id} className={cn("px-3 py-3 text-center font-medium", s.id === picked && "bg-primary/10 text-primary")}>{s.date.slice(5)}</th>
+                ))}
                 <th className="px-4 py-3 text-right font-medium">%</th>
               </tr>
             </thead>
             <tbody>
-              {t.students.slice(0, 12).map((st) => (
-                <tr key={st.id} className="border-t">
-                  <td className="px-4 py-3 font-medium">{st.name}</td>
-                  {t.sessions.slice(0, 5).map((s, i) => {
-                    const present = (st.id.charCodeAt(2) + i) % 5 !== 0;
-                    return <td key={s.id} className="px-3 py-3 text-center">
-                      {editable ? (
-                        <button className={cn("inline-grid h-7 w-7 place-items-center rounded-md ring-1 ring-inset", present ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}>
-                          {present ? <Check className="h-3.5 w-3.5" /> : <XIcon className="h-3.5 w-3.5" />}
-                        </button>
-                      ) : (
-                        present ? <Check className="mx-auto h-4 w-4 text-[color:var(--status-active-fg)]" /> : <XIcon className="mx-auto h-4 w-4 text-muted-foreground" />
-                      )}
-                    </td>;
-                  })}
-                  <td className="px-4 py-3 text-right font-medium">{st.attendance}%</td>
-                </tr>
-              ))}
+              {students.slice(0, 12).map((st) => {
+                const presentCount = visibleSessions.filter((s) => attendanceMap.get(`${s.id}:${st.id}`)).length;
+                const pct = visibleSessions.length ? Math.round((presentCount / visibleSessions.length) * 100) : 0;
+                return (
+                  <tr key={st.id} className="border-t">
+                    <td className="px-4 py-3 font-medium">{st.name}</td>
+                    {visibleSessions.map((s) => {
+                      const present = attendanceMap.get(`${s.id}:${st.id}`) ?? false;
+                      return (
+                        <td key={s.id} className="px-3 py-3 text-center">
+                          {editable ? (
+                            <button
+                              onClick={() => setAttendance.mutate({ sessionId: s.id, studentId: st.id, present: !present })}
+                              className={cn("inline-grid h-7 w-7 place-items-center rounded-md ring-1 ring-inset", present ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}
+                            >
+                              {present ? <Check className="h-3.5 w-3.5" /> : <XIcon className="h-3.5 w-3.5" />}
+                            </button>
+                          ) : present ? (
+                            <Check className="mx-auto h-4 w-4 text-[color:var(--status-active-fg)]" />
+                          ) : (
+                            <XIcon className="mx-auto h-4 w-4 text-muted-foreground" />
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="px-4 py-3 text-right font-medium">{pct}%</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -264,41 +517,109 @@ function Attendance({ t, editable }: { t: Training; editable: boolean }) {
   );
 }
 
-function Certificates({ t }: { t: Training }) {
+function Certificates({ t }: { t: TrainingWithInstructor }) {
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: certificates = [] } = useTrainingCertificates(t.id);
+  const updateTemplate = useUpdateCertificateTemplate(t.id);
+  const issueCertificates = useIssueCertificates(t.id);
   const [open, setOpen] = useState(false);
-  const [sentence, setSentence] = useState("This certifies that {student_name} has successfully completed {training_name}.");
+  const [sentence, setSentence] = useState(t.certificate_sentence);
+  const [signatoryName, setSignatoryName] = useState(t.certificate_signatory_name ?? "");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [signatureFile, setSignatureFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [issuing, setIssuing] = useState(false);
+
+  const certByStudent = useMemo(() => new Map(certificates.map((c) => [c.student_id, c])), [certificates]);
+  const previewName = students[0]?.name ?? "Student name";
+
+  function toCertExport(student: StudentRow) {
+    const cert = certByStudent.get(student.id);
+    return {
+      studentName: student.name,
+      trainingName: t.name,
+      sentence,
+      signatoryName: signatoryName || null,
+      logoUrl: t.certificate_logo_url,
+      signatureUrl: t.certificate_signature_url,
+      verificationId: cert ? `TO-${cert.id.slice(0, 8).toUpperCase()}` : "UNISSUED",
+    };
+  }
+
+  async function handleSaveTemplate() {
+    setSaving(true);
+    try {
+      const logoUrl = logoFile ? await uploadTrainingFile("certificates", t.id, logoFile) : t.certificate_logo_url;
+      const signatureUrl = signatureFile ? await uploadTrainingFile("certificates", t.id, signatureFile) : t.certificate_signature_url;
+      await updateTemplate.mutateAsync({
+        certificate_sentence: sentence,
+        certificate_signatory_name: signatoryName,
+        certificate_logo_url: logoUrl,
+        certificate_signature_url: signatureUrl,
+      });
+      toast.success("Certificate template saved");
+      setOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save template");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleIssueAll() {
+    const eligible = students.filter((s) => s.cert_issued && !certByStudent.has(s.id));
+    if (eligible.length === 0) {
+      toast.info("No new certificates to issue");
+      return;
+    }
+    setIssuing(true);
+    try {
+      await issueCertificates.mutateAsync(eligible.map((s) => s.id));
+      toast.success(`Issued ${eligible.length} certificate(s)`);
+    } finally {
+      setIssuing(false);
+    }
+  }
+
+  function handleDownloadAll() {
+    const issued = students.filter((s) => certByStudent.has(s.id));
+    if (issued.length === 0) {
+      toast.info("No issued certificates to download yet");
+      return;
+    }
+    downloadCertificatesBundle(issued.map(toCertExport), t.name);
+  }
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-base">Certificate template</CardTitle>
           <div className="flex gap-2">
-            <Select defaultValue="standard">
-              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="branded">Co-branded</SelectItem></SelectContent>
-            </Select>
+            <Button variant="outline" onClick={handleIssueAll} disabled={issuing}>{issuing ? "Issuing…" : "Issue certificates"}</Button>
             <Button variant="outline" onClick={() => setOpen(!open)}>Personalise</Button>
-            <Button><Download className="mr-1 h-4 w-4" />Download all (ZIP)</Button>
+            <Button onClick={handleDownloadAll}><Download className="mr-1 h-4 w-4" />Download all</Button>
           </div>
         </CardHeader>
         {open && (
           <CardContent className="grid gap-6 lg:grid-cols-2">
             <div className="space-y-4">
-              <div className="space-y-1.5"><Label>Partner logo (top-right)</Label><Input type="file" /></div>
+              <div className="space-y-1.5"><Label>Partner logo (top-right)</Label><Input type="file" accept="image/*" onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)} /></div>
               <div className="space-y-1.5"><Label>Core sentence</Label><Textarea rows={4} value={sentence} onChange={(e) => setSentence(e.target.value)} /></div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5"><Label>Signatory name</Label><Input placeholder="Jane Doe, Head of L&D" /></div>
-                <div className="space-y-1.5"><Label>Signature image</Label><Input type="file" /></div>
+                <div className="space-y-1.5"><Label>Signatory name</Label><Input placeholder="Jane Doe, Head of L&D" value={signatoryName} onChange={(e) => setSignatoryName(e.target.value)} /></div>
+                <div className="space-y-1.5"><Label>Signature image</Label><Input type="file" accept="image/*" onChange={(e) => setSignatureFile(e.target.files?.[0] ?? null)} /></div>
               </div>
+              <Button onClick={handleSaveTemplate} disabled={saving}>{saving ? "Saving…" : "Save template"}</Button>
             </div>
             <div className="rounded-xl border-2 border-dashed bg-card p-8 text-center">
               <Award className="mx-auto mb-3 h-10 w-10 text-primary" />
               <p className="text-xs uppercase tracking-widest text-muted-foreground">Certificate of completion</p>
-              <p className="mt-3 text-2xl font-semibold">Emma Chen</p>
-              <p className="mx-auto mt-4 max-w-md text-sm text-muted-foreground">{sentence.replace("{student_name}", "Emma Chen").replace("{training_name}", t.name)}</p>
+              <p className="mt-3 text-2xl font-semibold">{previewName}</p>
+              <p className="mx-auto mt-4 max-w-md text-sm text-muted-foreground">{sentence.replace("{student_name}", previewName).replace("{training_name}", t.name)}</p>
               <div className="mt-8 flex items-end justify-between text-xs text-muted-foreground">
-                <div className="text-left"><div className="mb-1 h-px w-32 bg-foreground/40" />Signatory</div>
-                <div className="text-right">ID: TO-2024-{t.id.toUpperCase()}-01</div>
+                <div className="text-left"><div className="mb-1 h-px w-32 bg-foreground/40" />{signatoryName || "Signatory"}</div>
+                <div className="text-right">ID: TO-{t.id.slice(0, 8).toUpperCase()}</div>
               </div>
             </div>
           </CardContent>
@@ -311,14 +632,24 @@ function Certificates({ t }: { t: Training }) {
               <tr><th className="px-4 py-3 text-left font-medium">Student</th><th className="px-4 py-3 text-left font-medium">Completion</th><th className="px-4 py-3 text-left font-medium">Certificate</th><th /></tr>
             </thead>
             <tbody>
-              {t.students.slice(0, 10).map((s) => (
-                <tr key={s.id} className="border-t">
-                  <td className="px-4 py-3 font-medium">{s.name}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{s.completion}%</td>
-                  <td className="px-4 py-3">{s.certIssued ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />}</td>
-                  <td className="px-4 py-3 text-right"><Button variant="outline" size="sm"><Download className="mr-1 h-3.5 w-3.5" />PDF</Button></td>
-                </tr>
-              ))}
+              {students.slice(0, 10).map((s) => {
+                const cert = certByStudent.get(s.id);
+                return (
+                  <tr key={s.id} className="border-t">
+                    <td className="px-4 py-3 font-medium">{s.name}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{s.completion_pct}%</td>
+                    <td className="px-4 py-3">{cert ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        {cert && (
+                          <Button variant="ghost" size="sm" onClick={() => copyShareLink(`/s/certificate/${cert.share_token}`)}><Copy className="mr-1 h-3.5 w-3.5" />Link</Button>
+                        )}
+                        <Button variant="outline" size="sm" disabled={!cert} onClick={() => downloadCertificate(toCertExport(s))}><Download className="mr-1 h-3.5 w-3.5" />PDF</Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </CardContent>
@@ -327,155 +658,374 @@ function Certificates({ t }: { t: Training }) {
   );
 }
 
-function SurveysInside({ t }: { t: Training }) {
+function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; level: "l1" | "l3"; students: StudentRow[] }) {
+  const { data: questions = [] } = useSurveyQuestions(level);
+  const { data: responses = [] } = useSurveyResponses(t.id, level);
+  const sendSurveys = useSendSurveys(t.id);
+  const [sending, setSending] = useState(false);
+
+  const responseByStudent = useMemo(() => new Map(responses.map((r) => [r.student_id, r])), [responses]);
+  const submittedCount = responses.filter((r) => r.submitted_at).length;
+  const activeStudents = students.filter((s) => s.status === "Active");
+
+  async function handleSend() {
+    if (activeStudents.length === 0) {
+      toast.info("No active students to send to");
+      return;
+    }
+    setSending(true);
+    try {
+      await sendSurveys.mutateAsync({ level, studentIds: activeStudents.map((s) => s.id) });
+      toast.success(`Survey links ready for ${activeStudents.length} student(s)`);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4 pt-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatTile label="Sent" value={responses.length} />
+        <StatTile label="Responses" value={`${submittedCount}/${responses.length || 0}`} />
+        <StatTile label="NPS" value={t.nps} />
+      </div>
+      <Card><CardContent className="space-y-2 pt-5 text-sm">
+        {questions.length === 0 ? (
+          <p className="text-muted-foreground">No questions configured yet — add some on the Surveys page.</p>
+        ) : (
+          questions.map((q, i) => <p key={q.id}>{i + 1}. {q.en}</p>)
+        )}
+      </CardContent></Card>
+      <Button onClick={handleSend} disabled={sending}><Send className="mr-1 h-4 w-4" />{sending ? "Sending…" : "Send / resend"}</Button>
+      {responses.length > 0 && (
+        <Card>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2 text-left font-medium">Student</th><th className="px-4 py-2 text-left font-medium">Status</th><th /></tr></thead>
+              <tbody>
+                {activeStudents.map((s) => {
+                  const r = responseByStudent.get(s.id);
+                  return (
+                    <tr key={s.id} className="border-t">
+                      <td className="px-4 py-2 font-medium">{s.name}</td>
+                      <td className="px-4 py-2">{r ? (r.submitted_at ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />) : <span className="text-muted-foreground">Not sent</span>}</td>
+                      <td className="px-4 py-2 text-right">
+                        {r && <Button variant="ghost" size="sm" onClick={() => copyShareLink(`/s/survey-${level}/${r.share_token}`)}><Copy className="mr-1 h-3.5 w-3.5" />Link</Button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function SurveysInside({ t }: { t: TrainingWithInstructor }) {
   const [sub, setSub] = useState("l1");
-  const data = [
-    { name: "1", v: 1 },{ name: "2", v: 2 },{ name: "3", v: 4 },{ name: "4", v: 8 },{ name: "5", v: 12 },
-  ];
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: preAttempts = [] } = useTestAttempts(t.id, "pre");
+  const { data: postAttempts = [] } = useTestAttempts(t.id, "post");
+  const preDone = preAttempts.filter((a) => a.submitted_at).length;
+  const postDone = postAttempts.filter((a) => a.submitted_at).length;
+
   return (
     <Card>
       <CardContent className="space-y-5 pt-6">
         <Tabs value={sub} onValueChange={setSub}>
           <TabsList><TabsTrigger value="l1">L1 Satisfaction</TabsTrigger><TabsTrigger value="l2">L2 Learning</TabsTrigger><TabsTrigger value="l3">L3 Behaviour</TabsTrigger></TabsList>
-          <TabsContent value="l1" className="space-y-4 pt-4">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <StatTile label="Responses" value={`${Math.round(t.numStudents * t.surveyRate / 100)}/${t.numStudents}`} />
-              <StatTile label="NPS" value={t.nps} />
-              <StatTile label="Avg score" value="4.4" />
-            </div>
-            <div className="h-56"><ResponsiveContainer width="100%" height="100%"><BarChart data={data}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><Tooltip /><Bar dataKey="v" fill="oklch(0.72 0.17 55)" /></BarChart></ResponsiveContainer></div>
-            <Button><Send className="mr-1 h-4 w-4" />Send / resend</Button>
-          </TabsContent>
+          <TabsContent value="l1"><SurveyLevelPanel t={t} level="l1" students={students} /></TabsContent>
           <TabsContent value="l2" className="space-y-4 pt-4">
             <div className="grid gap-3 sm:grid-cols-4">
-              <StatTile label="Pre-test" value={<StatusBadge status="Completed" />} />
-              <StatTile label="Post-test" value={<StatusBadge status="Active" />} />
-              <StatTile label="Learning gain" value={`+${t.learningGain}%`} />
-              <StatTile label="Completed" value={`${Math.round(t.numStudents * 0.7)}/${t.numStudents}`} />
+              <StatTile label="Pre-test" value={preDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
+              <StatTile label="Post-test" value={postDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
+              <StatTile label="Learning gain" value={`+${t.learning_gain}%`} />
+              <StatTile label="Pre / Post completed" value={`${preDone} / ${postDone}`} />
             </div>
-            <div className="overflow-hidden rounded-lg border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2 text-left font-medium">Module</th><th className="px-4 py-2 text-left font-medium">Pre %</th><th className="px-4 py-2 text-left font-medium">Post %</th><th className="px-4 py-2 text-left font-medium">Gain</th></tr></thead>
-                <tbody>{t.modules.map((m, i) => (<tr key={m} className="border-t"><td className="px-4 py-2 font-medium">{m}</td><td className="px-4 py-2">{45 + i * 3}</td><td className="px-4 py-2">{72 + i * 4}</td><td className="px-4 py-2 text-[color:var(--status-active-fg)]">+{27 + i}%</td></tr>))}</tbody>
-              </table>
-            </div>
+            <p className="text-sm text-muted-foreground">Manage pre/post-test questions and publishing from the instructor's Tests tab.</p>
           </TabsContent>
-          <TabsContent value="l3" className="space-y-4 pt-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <StatTile label="Auto-send" value="30 days after" />
-              <StatTile label="Status" value={<StatusBadge status="Scheduled" />} />
-            </div>
-            <Card><CardContent className="space-y-2 pt-5 text-sm">
-              <p>1. How often do you apply what you learned?</p>
-              <p>2. Impact on your daily work?</p>
-              <p>3. What blockers remain?</p>
-            </CardContent></Card>
-            <div className="h-56"><ResponsiveContainer width="100%" height="100%"><BarChart data={data}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><Tooltip /><Bar dataKey="v" fill="oklch(0.72 0.17 55)" /></BarChart></ResponsiveContainer></div>
-          </TabsContent>
+          <TabsContent value="l3"><SurveyLevelPanel t={t} level="l3" students={students} /></TabsContent>
         </Tabs>
       </CardContent>
     </Card>
   );
 }
 
-function GroupReport({ t }: { t: Training }) {
+function insightCards(content: GroupInsightsContent) {
+  return [
+    { title: "Strengths", body: content.strengths.map((s) => `• ${s}`).join("\n") },
+    { title: "Shared gap", body: content.shared_gap },
+    { title: "Recommended next training", body: content.recommended_next_training },
+    { title: "Account-manager talking points", body: content.talking_points.map((s) => `• ${s}`).join("\n") },
+  ];
+}
+
+function GroupReport({ t }: { t: TrainingWithInstructor }) {
+  const { data: existing, isLoading } = useGroupInsights(t.id);
+  const generate = useGenerateGroupInsights(t.id);
+
+  const content = generate.data ?? existing?.content ?? null;
+
+  async function handleGenerate() {
+    try {
+      await generate.mutateAsync();
+      toast.success("Group insights generated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to generate insights.");
+    }
+  }
+
+  function handleDownload() {
+    if (!content) return;
+    downloadGroupReport({
+      trainingName: t.name,
+      attendanceRate: t.attendance_rate,
+      learningGain: t.learning_gain,
+      nps: t.nps,
+      insights: insightCards(content),
+    });
+  }
+
   return (
     <div className="space-y-5">
-      <div className="flex justify-end"><Button><Download className="mr-1 h-4 w-4" />Download PDF</Button></div>
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={handleGenerate} disabled={generate.isPending}>
+          {generate.isPending ? "Generating…" : existing ? "Regenerate insights" : "Generate insights"}
+        </Button>
+        <Button onClick={handleDownload} disabled={!content}><Download className="mr-1 h-4 w-4" />Download PDF</Button>
+      </div>
       <div className="grid gap-4 sm:grid-cols-3">
-        <StatTile label="Attendance" value={`${t.attendanceRate}%`} />
-        <StatTile label="Learning gain" value={`+${t.learningGain}%`} />
+        <StatTile label="Attendance" value={`${t.attendance_rate}%`} />
+        <StatTile label="Learning gain" value={`+${t.learning_gain}%`} />
         <StatTile label="NPS" value={t.nps} />
       </div>
-      <Card><CardHeader><CardTitle className="text-base">Group insights</CardTitle></CardHeader>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Group insights</CardTitle></CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-2">
-          {[
-            { title: "Strengths", body: "Strong engagement during practical role-play. Group quickly adopted the new framework." },
-            { title: "Shared gap", body: "Difficulty handling pushback in high-pressure scenarios." },
-            { title: "Recommended next training", body: "Advanced Negotiation: Handling Conflict (2 days)." },
-            { title: "Account-manager talking points", body: "Position L3 follow-up at +30 days; share NPS with sponsor." },
-          ].map((c) => (
-            <Card key={c.title}><CardHeader><CardTitle className="text-sm">{c.title}</CardTitle></CardHeader><CardContent><Textarea defaultValue={c.body} rows={3} /></CardContent></Card>
-          ))}
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : !content ? (
+            <p className="text-sm text-muted-foreground lg:col-span-2">
+              No insights generated yet — click "Generate insights" to have AI summarise this cohort's attendance, test
+              results, and survey feedback.
+            </p>
+          ) : (
+            insightCards(content).map((c) => (
+              <Card key={c.title}>
+                <CardHeader><CardTitle className="text-sm">{c.title}</CardTitle></CardHeader>
+                <CardContent><p className="whitespace-pre-line text-sm text-muted-foreground">{c.body}</p></CardContent>
+              </Card>
+            ))
+          )}
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function PayoutInside({ t }: { t: Training }) {
-  const sessionsDone = t.sessions.filter((s) => s.status === "Done").length;
+function PayoutInside({ t }: { t: TrainingWithInstructor }) {
+  const { data: sessions = [] } = useTrainingSessions(t.id);
+  const sessionsDone = sessions.filter((s) => s.status === "Done").length;
   const rate = 450;
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">Payout</CardTitle>
-        <p className="text-sm text-muted-foreground">PO value <span className="ml-2 font-semibold text-foreground">{t.poValue.toLocaleString()}</span></p>
+        <p className="text-sm text-muted-foreground">PO value <span className="ml-2 font-semibold text-foreground">{(t.po_value ?? 0).toLocaleString()}</span></p>
       </CardHeader>
       <CardContent className="p-0">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3 text-left font-medium">Instructor</th><th className="px-4 py-3 text-left font-medium">Sessions delivered</th><th className="px-4 py-3 text-left font-medium">Rate</th><th className="px-4 py-3 text-left font-medium">Payout</th></tr></thead>
-          <tbody><tr className="border-t"><td className="px-4 py-3 font-medium">{t.instructor}</td><td className="px-4 py-3">{sessionsDone}</td><td className="px-4 py-3">{rate}</td><td className="px-4 py-3 font-semibold">{(sessionsDone * rate).toLocaleString()}</td></tr></tbody>
+          <tbody><tr className="border-t"><td className="px-4 py-3 font-medium">{t.instructor_name ?? "Unassigned"}</td><td className="px-4 py-3">{sessionsDone}</td><td className="px-4 py-3">{rate}</td><td className="px-4 py-3 font-semibold">{(sessionsDone * rate).toLocaleString()}</td></tr></tbody>
         </table>
       </CardContent>
     </Card>
   );
 }
 
-function Tests() {
+const OPTION_LETTERS = ["A", "B", "C", "D"];
+
+function Tests({ t }: { t: TrainingWithInstructor }) {
   const [phase, setPhase] = useState<"pre" | "post">("pre");
-  const [q, setQ] = useState(1);
-  const total = 8;
+  const { data: questions = [] } = useTrainingTests(t.id, phase);
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: attempts = [] } = useTestAttempts(t.id, phase);
+  const addQuestion = useAddTestQuestion(t.id);
+  const deleteQuestion = useDeleteTestQuestion(t.id, phase);
+  const publish = usePublishTestAttempts(t.id);
+
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", "", "", ""]);
+  const [correctIndex, setCorrectIndex] = useState(0);
+  const [publishing, setPublishing] = useState(false);
+
+  async function handleAddQuestion() {
+    if (!question || options.some((o) => !o)) {
+      toast.error("Fill in the question and all four options");
+      return;
+    }
+    await addQuestion.mutateAsync({
+      phase,
+      question,
+      options: OPTION_LETTERS.map((label, i) => ({ label, text: options[i] })),
+      correct_option: OPTION_LETTERS[correctIndex],
+      position: questions.length,
+    });
+    setQuestion("");
+    setOptions(["", "", "", ""]);
+    setCorrectIndex(0);
+    toast.success("Question added");
+  }
+
+  async function handlePublish() {
+    const activeStudents = students.filter((s) => s.status === "Active");
+    if (activeStudents.length === 0) {
+      toast.info("No active students to publish to");
+      return;
+    }
+    if (questions.length === 0) {
+      toast.error("Add at least one question before publishing");
+      return;
+    }
+    setPublishing(true);
+    try {
+      await publish.mutateAsync({ phase, studentIds: activeStudents.map((s) => s.id) });
+      toast.success(`Test links ready for ${activeStudents.length} student(s)`);
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  const activeStudents = students.filter((s) => s.status === "Active");
+  const attemptByStudent = useMemo(() => new Map(attempts.map((a) => [a.student_id, a])), [attempts]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={phase} onValueChange={(v) => setPhase(v as any)}><TabsList><TabsTrigger value="pre">Pre-test</TabsTrigger><TabsTrigger value="post">Post-test</TabsTrigger></TabsList></Tabs>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs">Draft</span>
-          <span className="text-muted-foreground">Question {q} of {total}</span>
-        </div>
+        <Tabs value={phase} onValueChange={(v) => setPhase(v as "pre" | "post")}><TabsList><TabsTrigger value="pre">Pre-test</TabsTrigger><TabsTrigger value="post">Post-test</TabsTrigger></TabsList></Tabs>
+        <span className="text-sm text-muted-foreground">{questions.length} question(s)</span>
       </div>
+
+      {questions.length > 0 && (
+        <Card>
+          <CardContent className="space-y-2 p-0">
+            {questions.map((q, i) => (
+              <div key={q.id} className="flex items-center justify-between gap-3 border-b p-3 last:border-b-0">
+                <div>
+                  <p className="text-sm font-medium">{i + 1}. {q.question}</p>
+                  <p className="text-xs text-muted-foreground">{q.options.map((o) => `${o.label}. ${o.text}`).join(" · ")} — correct: {q.correct_option}</p>
+                </div>
+                <Button variant="ghost" size="icon" onClick={() => deleteQuestion.mutate(q.id)}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="space-y-5 pt-6">
-          <div className="space-y-1.5"><Label>Question</Label><Textarea rows={2} placeholder="Write the question…" /></div>
+          <div className="space-y-1.5"><Label>Question</Label><Textarea rows={2} placeholder="Write the question…" value={question} onChange={(e) => setQuestion(e.target.value)} /></div>
           <div className="space-y-3">
-            {["A","B","C","D"].map((l) => (
-              <div key={l} className="flex items-center gap-3 rounded-md border p-3"><input type="radio" name="correct" className="h-4 w-4 accent-[color:var(--primary)]" /><span className="font-semibold">{l}.</span><Input placeholder={`Option ${l}`} className="border-0 shadow-none focus-visible:ring-0" /></div>
+            {OPTION_LETTERS.map((l, i) => (
+              <div key={l} className="flex items-center gap-3 rounded-md border p-3">
+                <input type="radio" name="correct" checked={correctIndex === i} onChange={() => setCorrectIndex(i)} className="h-4 w-4 accent-[color:var(--primary)]" />
+                <span className="font-semibold">{l}.</span>
+                <Input
+                  placeholder={`Option ${l}`}
+                  className="border-0 shadow-none focus-visible:ring-0"
+                  value={options[i]}
+                  onChange={(e) => setOptions(options.map((o, j) => (j === i ? e.target.value : o)))}
+                />
+              </div>
             ))}
           </div>
-          <div className="flex flex-wrap justify-between gap-2">
-            <Button variant="outline" onClick={() => setQ(Math.max(1, q - 1))}>Previous</Button>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setQ(Math.min(total, q + 1))}><Plus className="mr-1 h-4 w-4" />Add question</Button>
-              <Button>Publish &amp; send</Button>
-            </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={handleAddQuestion} disabled={addQuestion.isPending}><Plus className="mr-1 h-4 w-4" />Add question</Button>
+            <Button onClick={handlePublish} disabled={publishing}>{publishing ? "Publishing…" : "Publish & send"}</Button>
           </div>
         </CardContent>
       </Card>
+
+      {attempts.length > 0 && (
+        <Card>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2 text-left font-medium">Student</th><th className="px-4 py-2 text-left font-medium">Status</th><th className="px-4 py-2 text-left font-medium">Score</th><th /></tr></thead>
+              <tbody>
+                {activeStudents.map((s) => {
+                  const a = attemptByStudent.get(s.id);
+                  return (
+                    <tr key={s.id} className="border-t">
+                      <td className="px-4 py-2 font-medium">{s.name}</td>
+                      <td className="px-4 py-2">{a ? (a.submitted_at ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />) : <span className="text-muted-foreground">Not sent</span>}</td>
+                      <td className="px-4 py-2">{a?.score != null ? `${a.score}%` : "—"}</td>
+                      <td className="px-4 py-2 text-right">
+                        {a && <Button variant="ghost" size="sm" onClick={() => copyShareLink(`/s/test/${a.share_token}`)}><Copy className="mr-1 h-3.5 w-3.5" />Link</Button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
 
-function Resources() {
-  const files = [
-    { name: "negotiation-workbook-v2.pdf", scope: "Whole training", version: "v2" },
-    { name: "session-1-slides.pdf", scope: "Session 2024-06-30", version: "v1" },
-    { name: "case-study-pack.zip", scope: "Whole training", version: "v1" },
-  ];
+function Resources({ t }: { t: TrainingWithInstructor }) {
+  const { data: resources = [] } = useTrainingResources(t.id);
+  const addResource = useAddResource(t.id);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await addResource.mutateAsync({ file, scope: "Whole training" });
+      toast.success("File uploaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="pt-6">
-          <div className="grid h-32 place-items-center rounded-lg border-2 border-dashed text-sm text-muted-foreground">
-            <div className="text-center"><Upload className="mx-auto mb-2 h-6 w-6" />Drag &amp; drop files here or click to upload</div>
-          </div>
+          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFile} />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="grid h-32 w-full place-items-center rounded-lg border-2 border-dashed text-sm text-muted-foreground hover:bg-muted/30"
+          >
+            <div className="text-center"><Upload className="mx-auto mb-2 h-6 w-6" />{addResource.isPending ? "Uploading…" : "Click to upload a file"}</div>
+          </button>
         </CardContent>
       </Card>
       <Card>
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3 text-left font-medium">File</th><th className="px-4 py-3 text-left font-medium">Attached to</th><th className="px-4 py-3 text-left font-medium">Version</th></tr></thead>
-            <tbody>{files.map((f) => (<tr key={f.name} className="border-t"><td className="px-4 py-3 font-medium"><span className="inline-flex items-center gap-2"><FileText className="h-4 w-4 text-muted-foreground" />{f.name}</span></td><td className="px-4 py-3 text-muted-foreground">{f.scope}</td><td className="px-4 py-3 text-muted-foreground">{f.version}</td></tr>))}</tbody>
+            <tbody>
+              {resources.length === 0 ? (
+                <tr><td colSpan={3} className="px-4 py-10 text-center text-muted-foreground">No files uploaded yet.</td></tr>
+              ) : (
+                resources.map((f) => (
+                  <tr key={f.id} className="border-t">
+                    <td className="px-4 py-3 font-medium"><a href={f.file_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:underline"><FileText className="h-4 w-4 text-muted-foreground" />{f.name}</a></td>
+                    <td className="px-4 py-3 text-muted-foreground">{f.scope}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{f.version}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
           </table>
         </CardContent>
       </Card>

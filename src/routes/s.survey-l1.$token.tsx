@@ -1,49 +1,109 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { StudentShell } from "@/components/student-card";
+import { useEffect, useState } from "react";
+import { StudentShell, SurveyQuestionField, type SurveyQuestion } from "@/components/student-card";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { Star, Check } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { Check } from "lucide-react";
 
 export const Route = createFileRoute("/s/survey-l1/$token")({ component: L1 });
 
-function L1() {
-  const [sent, setSent] = useState(false);
-  const [sat, setSat] = useState(0);
-  const [nps, setNps] = useState<number | null>(null);
-  const [rec, setRec] = useState(0);
+interface SurveyData {
+  training_name: string;
+  submitted: boolean;
+  questions: SurveyQuestion[];
+}
 
-  if (sent) return (
-    <StudentShell><div className="text-center py-6"><div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)]"><Check className="h-6 w-6" /></div><h1 className="text-xl font-semibold">Thank you!</h1><p className="mt-1 text-sm text-muted-foreground">Your feedback has been submitted.</p></div></StudentShell>
-  );
+type Status = "loading" | "invalid" | "ready" | "done";
+
+function L1() {
+  const { token } = Route.useParams();
+  const [status, setStatus] = useState<Status>("loading");
+  const [data, setData] = useState<SurveyData | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    supabase.rpc("get_survey_response", { p_token: token }).then(({ data: result, error }) => {
+      if (!active) return;
+      if (error || !result) {
+        setStatus("invalid");
+        return;
+      }
+      const parsed = result as SurveyData;
+      setData(parsed);
+      setStatus(parsed.submitted ? "done" : "ready");
+    });
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    const { error } = await supabase.rpc("submit_survey_response", { p_token: token, p_answers: answers });
+    setSubmitting(false);
+    if (error) {
+      setStatus("invalid");
+      return;
+    }
+    setStatus("done");
+  }
+
+  if (status === "loading") {
+    return <StudentShell><div className="py-6 text-center text-sm text-muted-foreground">Loading…</div></StudentShell>;
+  }
+
+  if (status === "invalid") {
+    return (
+      <StudentShell>
+        <div className="py-6 text-center">
+          <h1 className="text-xl font-semibold">This link has expired</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Ask your admin to resend it.</p>
+        </div>
+      </StudentShell>
+    );
+  }
+
+  if (status === "done") {
+    return (
+      <StudentShell>
+        <div className="py-6 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)]"><Check className="h-6 w-6" /></div>
+          <h1 className="text-xl font-semibold">Thank you!</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Your feedback has been submitted.</p>
+        </div>
+      </StudentShell>
+    );
+  }
+
+  const questions = data!.questions;
+  const allAnswered = questions.every((q) => answers[q.id]);
 
   return (
     <StudentShell>
       <p className="text-xs uppercase tracking-wider text-muted-foreground">Satisfaction survey</p>
-      <h1 className="mt-1 text-2xl font-semibold">Negotiation Skills</h1>
-      <p className="text-sm text-muted-foreground">Acme Corp</p>
-      <form className="mt-6 space-y-8" onSubmit={(e) => { e.preventDefault(); setSent(true); }}>
-        <div>
-          <p className="mb-2 text-sm font-medium">Overall, how satisfied were you with this training?</p>
-          <div className="flex gap-2">{[1,2,3,4,5].map((n) => (
-            <button key={n} type="button" onClick={() => setSat(n)} className={cn("inline-grid h-11 w-11 place-items-center rounded-md ring-1 ring-inset transition", n <= sat ? "bg-primary text-primary-foreground ring-transparent" : "bg-card text-muted-foreground ring-border hover:bg-muted")}>
-              <Star className={cn("h-5 w-5", n <= sat && "fill-current")} />
-            </button>
-          ))}</div>
-        </div>
-        <div>
-          <p className="mb-2 text-sm font-medium">How likely are you to recommend this training? (0–10)</p>
-          <div className="flex flex-wrap gap-1.5">{Array.from({length:11}, (_,i) => i).map((n) => (
-            <button key={n} type="button" onClick={() => setNps(n)} className={cn("h-9 w-9 rounded-md text-sm ring-1 ring-inset", nps === n ? "bg-primary text-primary-foreground ring-transparent" : "bg-card ring-border hover:bg-muted")}>{n}</button>
-          ))}</div>
-        </div>
-        <div>
-          <p className="mb-2 text-sm font-medium">How relevant was the content to your role?</p>
-          <div className="flex gap-2">{[1,2,3,4,5].map((n) => (
-            <button key={n} type="button" onClick={() => setRec(n)} className={cn("h-9 min-w-9 rounded-full px-3 text-sm ring-1 ring-inset", n === rec ? "bg-primary text-primary-foreground ring-transparent" : "bg-card ring-border hover:bg-muted")}>{n}</button>
-          ))}</div>
-        </div>
-        <Button type="submit" className="w-full">Submit feedback</Button>
+      <h1 className="mt-1 text-2xl font-semibold">{data!.training_name}</h1>
+      <form
+        className="mt-6 space-y-8"
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSubmit();
+        }}
+      >
+        {questions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No questions configured yet.</p>
+        ) : (
+          questions.map((q) => (
+            <SurveyQuestionField
+              key={q.id}
+              question={q}
+              value={answers[q.id] ?? ""}
+              onChange={(v) => setAnswers({ ...answers, [q.id]: v })}
+            />
+          ))
+        )}
+        <Button type="submit" className="w-full" disabled={!allAnswered || submitting}>{submitting ? "Submitting…" : "Submit feedback"}</Button>
       </form>
     </StudentShell>
   );

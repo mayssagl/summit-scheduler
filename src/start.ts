@@ -1,4 +1,4 @@
-import { createStart, createMiddleware } from "@tanstack/react-start";
+import { createStart, createMiddleware, createCsrfMiddleware } from "@tanstack/react-start";
 
 import { renderErrorPage } from "./lib/error-page";
 
@@ -17,6 +17,13 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
   }
 });
 
+// Server functions (createServerFn) are same-origin RPC endpoints — this
+// rejects cross-site requests to them (e.g. inviteUser) with a 403 before
+// they ever reach a handler.
+const csrfMiddleware = createCsrfMiddleware({
+  filter: (ctx) => ctx.handlerType === "serverFn",
+});
+
 export const startInstance = createStart(() => ({
-  requestMiddleware: [errorMiddleware],
+  requestMiddleware: [csrfMiddleware, errorMiddleware],
 }));

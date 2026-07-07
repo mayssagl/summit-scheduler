@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useRole } from "@/lib/role";
-import { TRAININGS, type Status } from "@/lib/mock";
+import { useAuth } from "@/lib/auth";
+import { useAllSessions, useTrainings } from "@/lib/queries";
+import type { Status } from "@/lib/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -21,9 +22,19 @@ function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 
 function daysInMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); }
 
 function CalendarView() {
-  const { role } = useRole();
-  const trainings = useMemo(() => (role === "instructor" ? TRAININGS.filter((t) => t.instructorId === "i1") : role === "dm" ? TRAININGS.filter((t) => t.dmId === "dm1") : TRAININGS), [role]);
+  const { role } = useAuth();
+  const { data: trainings = [] } = useTrainings();
+  const { data: sessions = [] } = useAllSessions();
   const [cursor, setCursor] = useState(new Date());
+
+  const sessionDatesByTraining = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const s of sessions) {
+      if (!map.has(s.training_id)) map.set(s.training_id, new Set());
+      map.get(s.training_id)!.add(s.date);
+    }
+    return map;
+  }, [sessions]);
 
   const month = cursor.getMonth();
   const year = cursor.getFullYear();
@@ -37,7 +48,11 @@ function CalendarView() {
 
   const blocksFor = (d: Date) => {
     const ds = d.toISOString().slice(0, 10);
-    return trainings.filter((t) => t.sessions.some((s) => s.date === ds) || (t.startDate && t.endDate && ds >= t.startDate && ds <= t.endDate));
+    return trainings.filter(
+      (t) =>
+        sessionDatesByTraining.get(t.id)?.has(ds) ||
+        (t.start_date && t.end_date && ds >= t.start_date && ds <= t.end_date),
+    );
   };
 
   return (

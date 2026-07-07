@@ -1,21 +1,41 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { useRole } from "@/lib/role";
-import { TRAININGS } from "@/lib/mock";
+import { useAuth } from "@/lib/auth";
+import { useAllSessions, useTrainings } from "@/lib/queries";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const Route = createFileRoute("/_app/payout")({ component: Payout });
 
 function Payout() {
-  const { role } = useRole();
+  const { role } = useAuth();
   const rate = 450;
-  const rows = useMemo(() => {
-    const scoped = role === "instructor" ? TRAININGS.filter((t) => t.instructorId === "i1") : role === "dm" ? TRAININGS.filter((t) => t.dmId === "dm1") : TRAININGS;
-    return scoped.map((t) => {
-      const done = t.sessions.filter((s) => s.status === "Done").length;
-      return { id: t.id, name: t.name, instructor: t.instructor, sessions: done, docValue: t.poValue, payout: done * rate };
-    });
-  }, [role]);
+  const { data: trainings = [] } = useTrainings();
+  const { data: sessions = [] } = useAllSessions();
+
+  const doneCountByTraining = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of sessions) {
+      if (s.status !== "Done") continue;
+      map.set(s.training_id, (map.get(s.training_id) ?? 0) + 1);
+    }
+    return map;
+  }, [sessions]);
+
+  const rows = useMemo(
+    () =>
+      trainings.map((t) => {
+        const done = doneCountByTraining.get(t.id) ?? 0;
+        return {
+          id: t.id,
+          name: t.name,
+          instructor: t.instructor_name ?? "—",
+          sessions: done,
+          docValue: t.po_value ?? 0,
+          payout: done * rate,
+        };
+      }),
+    [trainings, doneCountByTraining],
+  );
 
   const total = rows.reduce((a, r) => a + r.payout, 0);
   const sessionsThisMonth = rows.reduce((a, r) => a + r.sessions, 0);
