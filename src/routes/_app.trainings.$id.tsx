@@ -203,7 +203,9 @@ function nextWeekdayOnOrAfter(from: Date, targetDayIndex: number) {
 }
 
 function iso(d: Date) {
-  return d.toISOString().slice(0, 10);
+  // toISOString() converts to UTC first, which shifts local midnight back a
+  // day in any timezone ahead of UTC (e.g. Europe/Paris) — use local parts.
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function Sessions({

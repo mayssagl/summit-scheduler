@@ -127,7 +127,7 @@ function Activate() {
     return (
       <AuthCard>
         <div className="mt-10 mb-4 grid place-items-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-gray-900" />
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted border-t-primary" />
         </div>
       </AuthCard>
     );
@@ -136,16 +136,16 @@ function Activate() {
   if (status === "invalid") {
     return (
       <AuthCard>
-        <h1 className="mt-6 text-xl font-semibold text-gray-900">This invite link isn't valid</h1>
-        <p className="mt-2 text-sm text-gray-500">{invalidMessage}</p>
+        <h1 className="mt-6 text-xl font-semibold text-foreground">This invite link isn't valid</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{invalidMessage}</p>
       </AuthCard>
     );
   }
 
   return (
     <AuthCard>
-      <h1 className="mt-6 text-xl font-semibold text-gray-900">Welcome, {firstNameOf(name)}</h1>
-      <p className="mt-1 text-sm text-gray-500">Set a password to activate your account.</p>
+      <h1 className="mt-6 text-xl font-semibold text-foreground">Welcome, {firstNameOf(name)}</h1>
+      <p className="mt-1 text-sm text-muted-foreground">Set a password to activate your account.</p>
 
       <form className="mt-6 flex flex-col gap-4" onSubmit={handleActivate} noValidate>
         <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} required />

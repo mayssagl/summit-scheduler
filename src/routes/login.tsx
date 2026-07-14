@@ -48,7 +48,7 @@ function Login() {
 
   return (
     <AuthCard>
-      <h1 className="mt-6 text-xl font-semibold text-gray-900">Sign in</h1>
+      <h1 className="mt-6 text-xl font-semibold text-foreground">Sign in</h1>
 
       <form className="mt-6 flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
         <TextField
@@ -75,7 +75,7 @@ function Login() {
         />
 
         {error && (
-          <p role="alert" className="-mt-1 text-xs text-red-600">
+          <p role="alert" className="-mt-1 text-xs text-destructive">
             {error}
           </p>
         )}
@@ -85,12 +85,12 @@ function Login() {
 
       <div className="mt-4 text-center">
         {resetSent ? (
-          <p className="text-xs text-gray-500">Check your inbox for a password reset link.</p>
+          <p className="text-xs text-muted-foreground">Check your inbox for a password reset link.</p>
         ) : (
           <button
             type="button"
             onClick={handleForgotPassword}
-            className="text-xs font-medium text-gray-500 underline-offset-2 hover:text-gray-700 hover:underline"
+            className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
             Forgot password?
           </button>

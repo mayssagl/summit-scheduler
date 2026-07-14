@@ -1,12 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
-import { useAllSessions, useTrainings } from "@/lib/queries";
+import { useAllSessions, useCreateSession, useTrainings } from "@/lib/queries";
 import type { Status } from "@/lib/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const DEFAULT_TIMEZONE = "Europe/Paris";
 
 export const Route = createFileRoute("/_app/calendar")({ component: CalendarView });
 
@@ -20,12 +27,55 @@ const STATUS_DOT: Record<Status, string> = {
 
 function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function daysInMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); }
+// toISOString() converts to UTC first, which shifts local midnight back a day
+// in any timezone ahead of UTC (e.g. Europe/Paris) — format from local parts instead.
+function toLocalDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function CalendarView() {
   const { role } = useAuth();
   const { data: trainings = [] } = useTrainings();
   const { data: sessions = [] } = useAllSessions();
+  const createSession = useCreateSession();
   const [cursor, setCursor] = useState(new Date());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [form, setForm] = useState({ trainingId: "", date: "", start_time: "09:00", end_time: "17:00", venue: "" });
+  const canCreate = role !== "instructor";
+
+  function openNewEvent(date?: Date) {
+    if (trainings.length === 0) {
+      toast.error("Create a training first — events are sessions attached to a training.");
+      return;
+    }
+    setForm({
+      trainingId: trainings[0]?.id ?? "",
+      date: date ? toLocalDateStr(date) : "",
+      start_time: "09:00",
+      end_time: "17:00",
+      venue: "",
+    });
+    setDialogOpen(true);
+  }
+
+  async function handleCreate() {
+    if (!form.trainingId || !form.date) return;
+    try {
+      await createSession.mutateAsync({
+        trainingId: form.trainingId,
+        date: form.date,
+        start_time: form.start_time,
+        end_time: form.end_time,
+        timezone: DEFAULT_TIMEZONE,
+        venue: form.venue,
+        module: "",
+      });
+      toast.success("Event added to calendar");
+      setDialogOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't add event");
+    }
+  }
 
   const sessionDatesByTraining = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -47,7 +97,7 @@ function CalendarView() {
   while (cells.length % 7 !== 0) cells.push({ date: null });
 
   const blocksFor = (d: Date) => {
-    const ds = d.toISOString().slice(0, 10);
+    const ds = toLocalDateStr(d);
     return trainings.filter(
       (t) =>
         sessionDatesByTraining.get(t.id)?.has(ds) ||
@@ -57,9 +107,16 @@ function CalendarView() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
-        <p className="text-sm text-muted-foreground">{role === "instructor" ? "Your assigned sessions." : "All trainings, color-coded by status."}</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+          <p className="text-sm text-muted-foreground">{role === "instructor" ? "Your assigned sessions." : "All trainings, color-coded by status."}</p>
+        </div>
+        {canCreate && (
+          <Button onClick={() => openNewEvent()}>
+            <Plus className="mr-1 h-4 w-4" />New event
+          </Button>
+        )}
       </div>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
@@ -79,10 +136,22 @@ function CalendarView() {
               const isToday = c.date && c.date.toDateString() === new Date().toDateString();
               const blocks = c.date ? blocksFor(c.date) : [];
               return (
-                <div key={i} className={cn("min-h-[88px] bg-card p-1.5", !c.date && "bg-muted/20")}>
+                <div key={i} className={cn("group relative min-h-[88px] bg-card p-1.5", !c.date && "bg-muted/20")}>
                   {c.date && (
                     <>
-                      <div className={cn("mb-1 text-xs font-medium", isToday ? "inline-grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground" : "text-muted-foreground")}>{c.date.getDate()}</div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <div className={cn("text-xs font-medium", isToday ? "inline-grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground" : "text-muted-foreground")}>{c.date.getDate()}</div>
+                        {canCreate && (
+                          <button
+                            type="button"
+                            onClick={() => openNewEvent(c.date!)}
+                            className="hidden h-4 w-4 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground group-hover:grid"
+                            aria-label="Add event"
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
                       <div className="space-y-1">
                         {blocks.slice(0, 3).map((t) => (
                           <Link key={t.id} to="/trainings/$id" params={{ id: t.id }} className="flex items-center gap-1.5 truncate rounded px-1.5 py-0.5 text-[11px] hover:bg-muted">
@@ -105,6 +174,51 @@ function CalendarView() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New event</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Training</Label>
+              <Select value={form.trainingId} onValueChange={(v) => setForm({ ...form, trainingId: v })}>
+                <SelectTrigger><SelectValue placeholder="Select a training" /></SelectTrigger>
+                <SelectContent>
+                  {trainings.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-3 space-y-1.5 sm:col-span-1">
+                <Label>Date</Label>
+                <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Start</Label>
+                <Input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>End</Label>
+                <Input type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Venue</Label>
+              <Input placeholder="Venue" value={form.venue} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleCreate}
+              disabled={!form.trainingId || !form.date || createSession.isPending}
+            >
+              {createSession.isPending ? "Adding…" : "Add event"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

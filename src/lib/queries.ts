@@ -29,7 +29,6 @@ export interface TrainingRow {
   certificate_logo_url: string | null;
   certificate_signature_url: string | null;
   doc_start_date: string | null;
-  doc_end_date: string | null;
   po_file_url: string | null;
   created_at: string;
   updated_at: string;
@@ -209,7 +208,6 @@ export interface NewTrainingInput {
   po_ref: string;
   po_value: number | null;
   doc_start_date: string | null;
-  doc_end_date: string | null;
   po_file_url: string | null;
   created_by: string;
 }
@@ -303,6 +301,22 @@ export function useAddSession(trainingId: string) {
   });
 }
 
+// Same as useAddSession, but for callers (e.g. the calendar page) that don't
+// know which training they're adding to until the user picks one at submit time.
+export function useCreateSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ trainingId, ...input }: NewSessionInput & { trainingId: string }) => {
+      const { error } = await supabase.from("sessions").insert({ ...input, training_id: trainingId });
+      raise(error);
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["sessions", variables.trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+}
+
 // ── students ─────────────────────────────────────────────────────
 
 export function useTrainingStudents(trainingId: string) {
@@ -388,6 +402,62 @@ export function useTrainingCertificates(trainingId: string) {
       return data ?? [];
     },
     enabled: !!trainingId,
+  });
+}
+
+export function useAllCertificates() {
+  return useQuery({
+    queryKey: ["certificates"],
+    queryFn: async (): Promise<CertificateRow[]> => {
+      const { data, error } = await supabase
+        .from("certificates")
+        .select("*")
+        .not("issued_at", "is", null)
+        .order("issued_at", { ascending: false });
+      raise(error);
+      return data ?? [];
+    },
+  });
+}
+
+// ── dashboard-wide aggregates ───────────────────────────────────
+
+export function useAllAttendance() {
+  return useQuery({
+    queryKey: ["attendance"],
+    queryFn: async (): Promise<AttendanceRow[]> => {
+      const { data, error } = await supabase.from("attendance").select("*");
+      raise(error);
+      return data ?? [];
+    },
+  });
+}
+
+export function useAllSurveyResponses() {
+  return useQuery({
+    queryKey: ["survey-responses"],
+    queryFn: async (): Promise<SurveyResponseRow[]> => {
+      const { data, error } = await supabase
+        .from("survey_responses")
+        .select("*")
+        .order("created_at", { ascending: false });
+      raise(error);
+      return data ?? [];
+    },
+  });
+}
+
+export function useAllGroupInsights() {
+  return useQuery({
+    queryKey: ["group-insights"],
+    queryFn: async (): Promise<GroupInsightsRow[]> => {
+      const { data, error } = await supabase
+        .from("group_insights")
+        .select("training_id, content, generated_at, status")
+        .order("generated_at", { ascending: false });
+      raise(error);
+      return data ?? [];
+    },
   });
 }
 

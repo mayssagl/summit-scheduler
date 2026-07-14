@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { ArrowLeft, FileText, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileText, Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/trainings/new")({
@@ -31,7 +31,13 @@ function nextWeekdayOnOrAfter(from: Date, targetDayIndex: number) {
 }
 
 function iso(d: Date) {
-  return d.toISOString().slice(0, 10);
+  // toISOString() converts to UTC first, which shifts local midnight back a
+  // day in any timezone ahead of UTC (e.g. Europe/Paris) — use local parts.
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function monthShort(dateStr: string) {
+  return new Date(dateStr).toLocaleString("en", { month: "short" });
 }
 
 function NewTraining() {
@@ -54,11 +60,13 @@ function NewTraining() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [modulesText, setModulesText] = useState("");
+  const [docType, setDocType] = useState<"po" | "contract">("po");
   const [poRef, setPoRef] = useState("");
   const [poValue, setPoValue] = useState("");
   const [docStartDate, setDocStartDate] = useState("");
-  const [docEndDate, setDocEndDate] = useState("");
   const [poFile, setPoFile] = useState<File | null>(null);
+  const [showAttach, setShowAttach] = useState(false);
+  const [savingPending, setSavingPending] = useState(false);
 
   // step 2 state
   const [mode, setMode] = useState<"single" | "recurring">("single");
@@ -90,30 +98,33 @@ function NewTraining() {
     return sessions;
   }
 
+  function buildTrainingInput(userId: string) {
+    return {
+      name,
+      client,
+      country,
+      venue,
+      language,
+      num_students: numStudents,
+      completion_threshold: completionThreshold,
+      instructor_id: instructorId ?? null,
+      start_date: startDate || null,
+      end_date: endDate || null,
+      modules: modulesText.split(",").map((m) => m.trim()).filter(Boolean),
+      po_ref: poRef,
+      po_value: poValue ? Number(poValue) : null,
+      doc_start_date: docStartDate || null,
+      po_file_url: null,
+      created_by: userId,
+    };
+  }
+
   async function handleCreate() {
     if (!user) return;
     setError(null);
     try {
       const id = await createTraining.mutateAsync({
-        training: {
-          name,
-          client,
-          country,
-          venue,
-          language,
-          num_students: numStudents,
-          completion_threshold: completionThreshold,
-          instructor_id: instructorId ?? null,
-          start_date: startDate || null,
-          end_date: endDate || null,
-          modules: modulesText.split(",").map((m) => m.trim()).filter(Boolean),
-          po_ref: poRef,
-          po_value: poValue ? Number(poValue) : null,
-          doc_start_date: docStartDate || null,
-          doc_end_date: docEndDate || null,
-          po_file_url: null,
-          created_by: user.id,
-        },
+        training: buildTrainingInput(user.id),
         sessions: buildSessions(),
         poFile,
       });
@@ -121,6 +132,25 @@ function NewTraining() {
       navigate({ to: "/trainings/$id", params: { id } });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create training.");
+    }
+  }
+
+  async function handleSaveAsPending() {
+    if (!user) return;
+    setError(null);
+    setSavingPending(true);
+    try {
+      const id = await createTraining.mutateAsync({
+        training: buildTrainingInput(user.id),
+        sessions: [],
+        poFile,
+      });
+      toast.success("Training saved as Pending");
+      navigate({ to: "/trainings/$id", params: { id } });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create training.");
+    } finally {
+      setSavingPending(false);
     }
   }
 
@@ -152,8 +182,8 @@ function NewTraining() {
                   <SelectContent><SelectItem value="France">France</SelectItem><SelectItem value="Germany">Germany</SelectItem><SelectItem value="UK">UK</SelectItem><SelectItem value="USA">USA</SelectItem></SelectContent>
                 </Select>
               </Field>
-              <Field label="Venue"><Input placeholder="Paris HQ" value={venue} onChange={(e) => setVenue(e.target.value)} /></Field>
-              <Field label="Language">
+              <Field label="Training venue"><Input placeholder="Paris HQ" value={venue} onChange={(e) => setVenue(e.target.value)} /></Field>
+              <Field label="Training language">
                 <Select value={language} onValueChange={(v) => setLanguage(v as "EN" | "FR")}><SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="EN">English</SelectItem><SelectItem value="FR">Français</SelectItem></SelectContent>
                 </Select>
@@ -166,28 +196,73 @@ function NewTraining() {
                   <SelectContent>{instructors.map((i) => <SelectItem key={i.id} value={i.id}>{i.full_name}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
-              <Field label="Start date"><Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
-              <Field label="End date"><Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></Field>
-              <Field label="Modules (optional)" className="sm:col-span-2"><Input placeholder="Comma-separated: Foundations, Tactics, Closing" value={modulesText} onChange={(e) => setModulesText(e.target.value)} /></Field>
+              <Field label="Training start date">
+                <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} onClick={(e) => e.currentTarget.showPicker?.()} />
+              </Field>
+              <Field label="Training end date">
+                <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} onClick={(e) => e.currentTarget.showPicker?.()} />
+              </Field>
+              <Field label="Training modules (optional)" className="sm:col-span-2"><Input placeholder="Comma-separated: Foundations, Tactics, Closing" value={modulesText} onChange={(e) => setModulesText(e.target.value)} /></Field>
             </div>
 
             <div className="rounded-lg border bg-muted/30 p-4">
-              <div className="mb-3 flex items-center gap-2 text-sm font-medium"><FileText className="h-4 w-4" />Linked PO / Contract</div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Reference"><Input placeholder="PO-2024-921" value={poRef} onChange={(e) => setPoRef(e.target.value)} /></Field>
+              <div className="mb-3 flex items-center gap-2 text-sm font-medium"><FileText className="h-4 w-4" />PO or contract</div>
+
+              <div className="mb-4 flex flex-wrap gap-2">
+                <DocPill active={docType === "po"} onClick={() => setDocType("po")}>PO</DocPill>
+                <DocPill active={docType === "contract"} onClick={() => setDocType("contract")}>Contract</DocPill>
+                <DocPill active={showAttach} icon={<Upload className="h-3 w-3" />} onClick={() => setShowAttach((v) => !v)}>Attach file</DocPill>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Reference">
+                  <Input placeholder={docType === "po" ? "PO-2024-921" : "CTR-2024-921"} value={poRef} onChange={(e) => setPoRef(e.target.value)} />
+                </Field>
                 <Field label="Value"><Input type="number" placeholder="24000" value={poValue} onChange={(e) => setPoValue(e.target.value)} /></Field>
-                <Field label="Doc start"><Input type="date" value={docStartDate} onChange={(e) => setDocStartDate(e.target.value)} /></Field>
-                <Field label="Doc end"><Input type="date" value={docEndDate} onChange={(e) => setDocEndDate(e.target.value)} /></Field>
-                <Field label="Attach file" className="sm:col-span-2">
-                  <Input type="file" onChange={(e) => setPoFile(e.target.files?.[0] ?? null)} />
-                  {poFile && <p className="mt-1 text-xs text-muted-foreground">{poFile.name}</p>}
+                <Field label="Dates">
+                  <Input
+                    readOnly
+                    disabled
+                    className="text-muted-foreground"
+                    value={
+                      startDate && endDate
+                        ? monthShort(startDate) === monthShort(endDate)
+                          ? monthShort(startDate)
+                          : `${monthShort(startDate)}–${monthShort(endDate)}`
+                        : "Not set"
+                    }
+                  />
+                </Field>
+              </div>
+
+              {showAttach && (
+                <div className="mt-3">
+                  <Field label="Attach file">
+                    <Input type="file" onChange={(e) => setPoFile(e.target.files?.[0] ?? null)} />
+                    {poFile && <p className="mt-1 text-xs text-muted-foreground">{poFile.name}</p>}
+                  </Field>
+                </div>
+              )}
+
+              <div className="mt-3">
+                <Field label="Contract signature date">
+                  <Input type="date" value={docStartDate} onChange={(e) => setDocStartDate(e.target.value)} onClick={(e) => e.currentTarget.showPicker?.()} />
                 </Field>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" asChild><Link to="/trainings">Cancel</Link></Button>
-              <Button onClick={() => setStep(2)} disabled={!name || !client}>Continue</Button>
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+
+            <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:items-center sm:justify-between">
+              <Button variant="outline" onClick={handleSaveAsPending} disabled={!name || !client || savingPending}>
+                {savingPending ? "Saving…" : "Save as Pending"}
+              </Button>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" asChild><Link to="/trainings">Cancel</Link></Button>
+                <Button onClick={() => setStep(2)} disabled={!name || !client}>
+                  Save & add sessions<ArrowRight className="ml-1.5 h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -271,5 +346,31 @@ function Field({ label, children, className }: { label: string; children: React.
       <Label>{label}</Label>
       {children}
     </div>
+  );
+}
+
+function DocPill({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+        active ? "border-primary text-primary" : "border-input text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {icon ?? <span className={cn("h-1.5 w-1.5 rounded-full", active ? "bg-primary" : "bg-muted-foreground/40")} />}
+      {children}
+    </button>
   );
 }

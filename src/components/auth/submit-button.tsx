@@ -17,9 +17,9 @@ export function SubmitButton({
       type="submit"
       disabled={disabled || loading}
       className={cn(
-        "flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-gray-900 text-sm font-semibold text-white transition-colors",
-        "hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-[#e8590c]/40 focus:ring-offset-2",
-        "disabled:cursor-not-allowed disabled:bg-gray-400",
+        "flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-foreground transition-colors",
+        "hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring/40 focus:ring-offset-2",
+        "disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground",
         className,
       )}
       {...props}

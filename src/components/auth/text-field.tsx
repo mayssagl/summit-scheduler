@@ -20,7 +20,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
     <div className="flex flex-col gap-1.5">
       <label
         htmlFor={inputId}
-        className="text-xs font-semibold uppercase tracking-wide text-gray-500"
+        className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
       >
         {label}
       </label>
@@ -30,20 +30,20 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
         aria-invalid={!!error}
         aria-describedby={error ? errorId : hint ? hintId : undefined}
         className={cn(
-          "h-11 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition-colors placeholder:text-gray-400",
-          "focus:border-[#e8590c] focus:ring-2 focus:ring-[#e8590c]/25",
-          error && "border-red-400 focus:border-red-500 focus:ring-red-500/20",
-          props.disabled && "cursor-not-allowed bg-gray-50 text-gray-400",
+          "h-11 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground",
+          "focus:border-primary focus:ring-2 focus:ring-ring/25",
+          error && "border-destructive focus:border-destructive focus:ring-destructive/20",
+          props.disabled && "cursor-not-allowed bg-muted text-muted-foreground",
           className,
         )}
         {...props}
       />
       {error ? (
-        <p id={errorId} className="text-xs text-red-600">
+        <p id={errorId} className="text-xs text-destructive">
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="text-xs text-gray-400">
+        <p id={hintId} className="text-xs text-muted-foreground">
           {hint}
         </p>
       ) : null}
