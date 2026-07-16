@@ -25,6 +25,7 @@ import {
   useTrainingStudents,
   useTrainingTests,
   useUpdateCertificateTemplate,
+  useUpdateStudentStatus,
   uploadTrainingFile,
   type GroupInsightsContent,
   type StudentRow,
@@ -388,6 +389,7 @@ function parseStudentsCsv(text: string): { name: string; email: string; dept: st
 function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null }) {
   const { data: students = [] } = useTrainingStudents(t.id);
   const addStudents = useAddStudents(t.id);
+  const updateStatus = useUpdateStudentStatus(t.id);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const active = students.filter((s) => s.status === "Active").length;
 
@@ -424,7 +426,20 @@ function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null
                 <td className="px-4 py-3 text-muted-foreground">{s.email}</td>
                 <td className="px-4 py-3 text-muted-foreground">{s.dept}</td>
                 {role === "instructor" && <td className="px-4 py-3 text-muted-foreground">{s.attendance_pct}%</td>}
-                <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Active" ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}>{s.status}</span></td>
+                <td className="px-4 py-3">
+                  {role === "instructor" ? (
+                    <span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Active" ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}>{s.status}</span>
+                  ) : (
+                    <Select value={s.status} onValueChange={(v) => updateStatus.mutate({ studentId: s.id, status: v as StudentRow["status"] })}>
+                      <SelectTrigger className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Invited">Invited</SelectItem>
+                        <SelectItem value="Active">Active</SelectItem>
+                        <SelectItem value="Dropped">Dropped</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -660,6 +675,41 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
   );
 }
 
+const FREQUENCY_OPTIONS = ["Never", "Rarely", "Sometimes", "Often", "Always"];
+
+function ResponseDistributionChart({ categories, counts }: { categories: string[]; counts: number[] }) {
+  const max = Math.max(1, ...counts);
+  return (
+    <div className="flex h-24 items-end gap-2">
+      {categories.map((c, i) => (
+        <div key={c} className="flex flex-1 flex-col items-center gap-1.5">
+          <div
+            className="w-full rounded-t bg-[color:var(--chart-2)]"
+            style={{ height: `${Math.max(4, (counts[i] / max) * 100)}%` }}
+            title={`${c}: ${counts[i]} response${counts[i] === 1 ? "" : "s"}`}
+          />
+          <span className="text-[10px] text-muted-foreground">{c}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Pill({ tone, children }: { tone: "active" | "pending" | "muted"; children: React.ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset",
+        tone === "active" && "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent",
+        tone === "pending" && "bg-[color-mix(in_oklab,var(--status-pending)_25%,white)] text-[color:var(--status-pending-fg)] ring-transparent",
+        tone === "muted" && "bg-muted text-muted-foreground ring-border",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; level: "l1" | "l3"; students: StudentRow[] }) {
   const { data: questions = [] } = useSurveyQuestions(level);
   const { data: responses = [] } = useSurveyResponses(t.id, level);
@@ -669,6 +719,14 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
   const responseByStudent = useMemo(() => new Map(responses.map((r) => [r.student_id, r])), [responses]);
   const submittedCount = responses.filter((r) => r.submitted_at).length;
   const activeStudents = students.filter((s) => s.status === "Active");
+
+  const chartQuestion = questions.find((q) => q.type === (level === "l1" ? "1-5" : "Frequency"));
+  const chartCategories = level === "l1" ? ["1", "2", "3", "4", "5"] : FREQUENCY_OPTIONS;
+  const chartCounts = chartCategories.map(
+    (cat) => responses.filter((r) => chartQuestion && String(r.answers[chartQuestion.id]) === cat).length,
+  );
+
+  const autoSendDate = t.end_date ? new Date(new Date(t.end_date).getTime() + 30 * 24 * 60 * 60 * 1000) : null;
 
   async function handleSend() {
     if (activeStudents.length === 0) {
@@ -686,19 +744,35 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
 
   return (
     <div className="space-y-4 pt-4">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <StatTile label="Sent" value={responses.length} />
-        <StatTile label="Responses" value={`${submittedCount}/${responses.length || 0}`} />
-        <StatTile label="NPS" value={t.nps} />
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="space-y-3 lg:col-span-2">
+          <p className="truncate text-sm text-muted-foreground">
+            {questions.length === 0
+              ? "No questions configured yet — add some on the Surveys page."
+              : questions.map((q, i) => `Q${i + 1} ${q.en} (${q.type})`).join(" · ")}
+          </p>
+          {chartQuestion && <ResponseDistributionChart categories={chartCategories} counts={chartCounts} />}
+        </div>
+        <div className="space-y-3">
+          {level === "l1" ? (
+            <div className="rounded-lg border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Sent on completion</p>
+              <div className="mt-1.5">{t.status === "Completed" ? <Pill tone="active">Done</Pill> : <Pill tone="pending">Pending</Pill>}</div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <Pill tone="muted">Auto-send: {autoSendDate ? autoSendDate.toLocaleDateString("en", { day: "2-digit", month: "short" }) : "—"}</Pill>
+              {responses.length > 0 ? <Pill tone="active">Sent</Pill> : <Pill tone="pending">Scheduled</Pill>}
+            </div>
+          )}
+          <Button onClick={handleSend} disabled={sending} className="w-full">
+            <Send className="mr-1 h-4 w-4" />{sending ? "Sending…" : `Send / resend ${level.toUpperCase()}`}
+          </Button>
+        </div>
       </div>
-      <Card><CardContent className="space-y-2 pt-5 text-sm">
-        {questions.length === 0 ? (
-          <p className="text-muted-foreground">No questions configured yet — add some on the Surveys page.</p>
-        ) : (
-          questions.map((q, i) => <p key={q.id}>{i + 1}. {q.en}</p>)
-        )}
-      </CardContent></Card>
-      <Button onClick={handleSend} disabled={sending}><Send className="mr-1 h-4 w-4" />{sending ? "Sending…" : "Send / resend"}</Button>
+      <p className="text-sm text-muted-foreground">
+        {submittedCount}/{responses.length || 0} responded{level === "l1" && ` · NPS +${t.nps}`}
+      </p>
       {responses.length > 0 && (
         <Card>
           <CardContent className="p-0">
@@ -726,13 +800,57 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
   );
 }
 
+function testBuildStatus(questionCount: number, attemptCount: number): "Not built" | "Draft" | "Published" {
+  if (questionCount === 0) return "Not built";
+  if (attemptCount === 0) return "Draft";
+  return "Published";
+}
+
+function buildStatusTone(status: string): "active" | "pending" | "muted" {
+  if (status === "Published") return "active";
+  if (status === "Draft") return "pending";
+  return "muted";
+}
+
 function SurveysInside({ t }: { t: TrainingWithInstructor }) {
   const [sub, setSub] = useState("l1");
   const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: preQuestions = [] } = useTrainingTests(t.id, "pre");
+  const { data: postQuestions = [] } = useTrainingTests(t.id, "post");
   const { data: preAttempts = [] } = useTestAttempts(t.id, "pre");
   const { data: postAttempts = [] } = useTestAttempts(t.id, "post");
   const preDone = preAttempts.filter((a) => a.submitted_at).length;
   const postDone = postAttempts.filter((a) => a.submitted_at).length;
+  const activeCount = students.filter((s) => s.status === "Active").length;
+
+  const moduleScores = useMemo(() => {
+    const buckets = new Map<string, { preCorrect: number; preTotal: number; postCorrect: number; postTotal: number }>();
+    for (const attempt of [...preAttempts, ...postAttempts]) {
+      if (!attempt.submitted_at) continue;
+      const phaseTests = attempt.phase === "pre" ? preQuestions : postQuestions;
+      for (const q of phaseTests) {
+        const key = q.module?.trim() || "Overall";
+        if (!buckets.has(key)) buckets.set(key, { preCorrect: 0, preTotal: 0, postCorrect: 0, postTotal: 0 });
+        const b = buckets.get(key)!;
+        const isCorrect = attempt.answers?.[q.id] !== undefined && attempt.answers[q.id] === q.correct_option;
+        if (attempt.phase === "pre") {
+          b.preTotal += 1;
+          if (isCorrect) b.preCorrect += 1;
+        } else {
+          b.postTotal += 1;
+          if (isCorrect) b.postCorrect += 1;
+        }
+      }
+    }
+    return Array.from(buckets.entries()).map(([module, b]) => {
+      const pre = b.preTotal > 0 ? Math.round((b.preCorrect / b.preTotal) * 100) : null;
+      const post = b.postTotal > 0 ? Math.round((b.postCorrect / b.postTotal) * 100) : null;
+      return { module, pre, post, gain: pre !== null && post !== null ? post - pre : null };
+    });
+  }, [preAttempts, postAttempts, preQuestions, postQuestions]);
+
+  const preStatus = testBuildStatus(preQuestions.length, preAttempts.length);
+  const postStatus = testBuildStatus(postQuestions.length, postAttempts.length);
 
   return (
     <Card>
@@ -741,13 +859,41 @@ function SurveysInside({ t }: { t: TrainingWithInstructor }) {
           <TabsList><TabsTrigger value="l1">L1 Satisfaction</TabsTrigger><TabsTrigger value="l2">L2 Learning</TabsTrigger><TabsTrigger value="l3">L3 Behaviour</TabsTrigger></TabsList>
           <TabsContent value="l1"><SurveyLevelPanel t={t} level="l1" students={students} /></TabsContent>
           <TabsContent value="l2" className="space-y-4 pt-4">
-            <div className="grid gap-3 sm:grid-cols-4">
-              <StatTile label="Pre-test" value={preDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
-              <StatTile label="Post-test" value={postDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
-              <StatTile label="Learning gain" value={`+${t.learning_gain}%`} />
-              <StatTile label="Pre / Post completed" value={`${preDone} / ${postDone}`} />
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Pre:</span>
+              <Pill tone={buildStatusTone(preStatus)}>{preStatus}</Pill>
+              <span className="text-muted-foreground">Post:</span>
+              <Pill tone={buildStatusTone(postStatus)}>{postStatus}</Pill>
+              <span className="text-xs text-muted-foreground">— built by the instructor</span>
             </div>
-            <p className="text-sm text-muted-foreground">Manage pre/post-test questions and publishing from the instructor's Tests tab.</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <StatTile label="Avg learning gain" value={`+${t.learning_gain}%`} />
+              <StatTile label="Questions / test" value={Math.max(preQuestions.length, postQuestions.length)} />
+              <StatTile label="Completed post" value={`${postDone}/${activeCount}`} />
+            </div>
+            {moduleScores.length > 0 && (
+              <Card>
+                <CardHeader><CardTitle className="text-sm">Per-skill mastery (post)</CardTitle></CardHeader>
+                <CardContent className="p-0">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                      <tr><th className="px-4 py-2 text-left font-medium">Module</th><th className="px-4 py-2 text-left font-medium">Pre</th><th className="px-4 py-2 text-left font-medium">Post</th><th className="px-4 py-2 text-left font-medium">Gain</th></tr>
+                    </thead>
+                    <tbody>
+                      {moduleScores.map((m, i) => (
+                        <tr key={m.module} className="border-t">
+                          <td className="px-4 py-2 font-medium">{i + 1}. {m.module}</td>
+                          <td className="px-4 py-2 text-muted-foreground">{m.pre !== null ? `${m.pre}%` : "—"}</td>
+                          <td className="px-4 py-2 text-muted-foreground">{m.post !== null ? `${m.post}%` : "—"}</td>
+                          <td className="px-4 py-2 font-medium">{m.gain !== null ? `${m.gain >= 0 ? "+" : ""}${m.gain}` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </CardContent>
+              </Card>
+            )}
+            <p className="text-xs text-muted-foreground">Admin &amp; DM can see whether the pre/post tests are built (not built / draft / published).</p>
           </TabsContent>
           <TabsContent value="l3"><SurveyLevelPanel t={t} level="l3" students={students} /></TabsContent>
         </Tabs>
@@ -862,6 +1008,7 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState(["", "", "", ""]);
   const [correctIndex, setCorrectIndex] = useState(0);
+  const [module, setModule] = useState<string>(t.modules[0] ?? "");
   const [publishing, setPublishing] = useState(false);
 
   async function handleAddQuestion() {
@@ -874,6 +1021,7 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
       question,
       options: OPTION_LETTERS.map((label, i) => ({ label, text: options[i] })),
       correct_option: OPTION_LETTERS[correctIndex],
+      module: module || null,
       position: questions.length,
     });
     setQuestion("");
@@ -917,7 +1065,7 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
             {questions.map((q, i) => (
               <div key={q.id} className="flex items-center justify-between gap-3 border-b p-3 last:border-b-0">
                 <div>
-                  <p className="text-sm font-medium">{i + 1}. {q.question}</p>
+                  <p className="text-sm font-medium">{i + 1}. {q.question} {q.module && <span className="font-normal text-muted-foreground">· {q.module}</span>}</p>
                   <p className="text-xs text-muted-foreground">{q.options.map((o) => `${o.label}. ${o.text}`).join(" · ")} — correct: {q.correct_option}</p>
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => deleteQuestion.mutate(q.id)}><Trash2 className="h-4 w-4" /></Button>
@@ -930,6 +1078,17 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
       <Card>
         <CardContent className="space-y-5 pt-6">
           <div className="space-y-1.5"><Label>Question</Label><Textarea rows={2} placeholder="Write the question…" value={question} onChange={(e) => setQuestion(e.target.value)} /></div>
+          <div className="space-y-1.5">
+            <Label>Module (optional)</Label>
+            {t.modules.length > 0 ? (
+              <Select value={module} onValueChange={setModule}>
+                <SelectTrigger className="sm:w-64"><SelectValue placeholder="No module" /></SelectTrigger>
+                <SelectContent>{t.modules.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+            ) : (
+              <Input className="sm:w-64" placeholder="e.g. Framing" value={module} onChange={(e) => setModule(e.target.value)} />
+            )}
+          </div>
           <div className="space-y-3">
             {OPTION_LETTERS.map((l, i) => (
               <div key={l} className="flex items-center gap-3 rounded-md border p-3">

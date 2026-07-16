@@ -44,6 +44,9 @@ const TYPES = ["1-5", "0-10 NPS", "Frequency", "Open"];
 function useDraft(level: "l1" | "l3") {
   const { data, isLoading } = useSurveyQuestions(level);
   const [draft, setDraft] = useState<DraftQuestion[] | null>(null);
+  // True until this tab's questions are actually saved to the database —
+  // students hitting a link before that will see an empty question list.
+  const unsaved = !isLoading && (data?.length ?? 0) === 0;
 
   useEffect(() => {
     if (draft !== null || isLoading) return;
@@ -52,14 +55,14 @@ function useDraft(level: "l1" | "l3") {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, isLoading]);
 
-  return [draft ?? [], setDraft] as const;
+  return [draft ?? [], setDraft, unsaved] as const;
 }
 
 function Surveys() {
   const [lang, setLang] = useState<"EN" | "FR">("EN");
   const [tab, setTab] = useState("l1");
-  const [l1, setL1] = useDraft("l1");
-  const [l3, setL3] = useDraft("l3");
+  const [l1, setL1, l1Unsaved] = useDraft("l1");
+  const [l3, setL3, l3Unsaved] = useDraft("l3");
   const saveL1 = useSaveSurveyQuestions("l1");
   const saveL3 = useSaveSurveyQuestions("l3");
 
@@ -87,13 +90,16 @@ function Surveys() {
     <div className="space-y-2">
       {list.map((q, i) => (
         <div key={q.key} className="grid grid-cols-1 gap-2 rounded-lg border p-3 sm:grid-cols-12">
-          <Input className="sm:col-span-5" placeholder="English" value={q.en} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, en: e.target.value } : x))} />
-          <Input className="sm:col-span-5" placeholder="Français" value={q.fr} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, fr: e.target.value } : x))} />
+          {lang === "EN" ? (
+            <Input className="sm:col-span-10" placeholder="English" value={q.en} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, en: e.target.value } : x))} />
+          ) : (
+            <Input className="sm:col-span-10" placeholder="Français" value={q.fr} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, fr: e.target.value } : x))} />
+          )}
           <Select value={q.type} onValueChange={(v) => setList(list.map((x, j) => j === i ? { ...x, type: v } : x))}>
-            <SelectTrigger className="sm:col-span-2"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="sm:col-span-1"><SelectValue /></SelectTrigger>
             <SelectContent>{TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
-          <div className="flex justify-end sm:col-span-12"><Button variant="ghost" size="icon" onClick={() => setList(list.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></div>
+          <div className="flex justify-end sm:col-span-1"><Button variant="ghost" size="icon" onClick={() => setList(list.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></div>
         </div>
       ))}
       <div className="flex gap-2">
@@ -121,8 +127,22 @@ function Surveys() {
         <CardContent>
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList><TabsTrigger value="l1">L1 Satisfaction &amp; NPS</TabsTrigger><TabsTrigger value="l3">L3 Behaviour</TabsTrigger></TabsList>
-            <TabsContent value="l1" className="pt-4"><Editor list={l1} setList={setL1} level="l1" saving={saveL1.isPending} /></TabsContent>
-            <TabsContent value="l3" className="pt-4"><Editor list={l3} setList={setL3} level="l3" saving={saveL3.isPending} /></TabsContent>
+            <TabsContent value="l1" className="space-y-3 pt-4">
+              {l1Unsaved && (
+                <p className="rounded-md border border-[color:var(--status-pending)]/40 bg-[color:var(--status-pending)]/10 px-3 py-2 text-xs text-[color:var(--status-pending-fg)]">
+                  These are default questions and haven't been saved yet — students opening a link before you click Save will see no questions.
+                </p>
+              )}
+              <Editor list={l1} setList={setL1} level="l1" saving={saveL1.isPending} />
+            </TabsContent>
+            <TabsContent value="l3" className="space-y-3 pt-4">
+              {l3Unsaved && (
+                <p className="rounded-md border border-[color:var(--status-pending)]/40 bg-[color:var(--status-pending)]/10 px-3 py-2 text-xs text-[color:var(--status-pending-fg)]">
+                  These are default questions and haven't been saved yet — students opening a link before you click Save will see no questions.
+                </p>
+              )}
+              <Editor list={l3} setList={setL3} level="l3" saving={saveL3.isPending} />
+            </TabsContent>
           </Tabs>
         </CardContent>
       </Card>

@@ -84,6 +84,7 @@ export interface TestRow {
   question: string;
   options: { label: string; text: string }[];
   correct_option: string | null;
+  module: string | null;
   position: number;
   created_by: string | null;
   created_at: string;
@@ -155,6 +156,20 @@ export interface ProfileRow {
 
 function raise(error: { message: string } | null) {
   if (error) throw new Error(error.message);
+}
+
+// Fires the send-student-email edge function in the background — a failed
+// notification email should never surface as a mutation error to the caller.
+function notifyStudent(payload: {
+  type: "welcome" | "survey" | "test" | "certificate";
+  training_id: string;
+  student_id: string;
+  level?: "l1" | "l3";
+  phase?: "pre" | "post";
+  token?: string;
+}) {
+  if (typeof window === "undefined") return;
+  supabase.functions.invoke("send-student-email", { body: { ...payload, origin: window.location.origin } }).catch(() => {});
 }
 
 // ── trainings ────────────────────────────────────────────────────
@@ -345,9 +360,42 @@ export function useAddStudents(trainingId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (students: NewStudentInput[]) => {
-      const { error } = await supabase
+      // FR-4: dedupe by email — upsert so re-imports/overlapping CSV rows
+      // update the existing student instead of creating a duplicate. Also
+      // collapse same-email rows within this batch (last one wins), since
+      // Postgres rejects an upsert that targets the same row twice.
+      const byEmail = new Map<string, NewStudentInput>();
+      for (const s of students) byEmail.set(s.email.trim().toLowerCase(), s);
+      const rows = Array.from(byEmail, ([email, s]) => ({ ...s, email, training_id: trainingId }));
+
+      const { data: existing } = await supabase
         .from("students")
-        .insert(students.map((s) => ({ ...s, training_id: trainingId })));
+        .select("email")
+        .eq("training_id", trainingId)
+        .in("email", rows.map((r) => r.email));
+      const existingEmails = new Set((existing ?? []).map((s) => s.email));
+
+      const { data: upserted, error } = await supabase
+        .from("students")
+        .upsert(rows, { onConflict: "training_id,email" })
+        .select("id, email");
+      raise(error);
+
+      for (const s of upserted ?? []) {
+        if (!existingEmails.has(s.email)) notifyStudent({ type: "welcome", training_id: trainingId, student_id: s.id });
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["students", trainingId] });
+    },
+  });
+}
+
+export function useUpdateStudentStatus(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ studentId, status }: { studentId: string; status: "Active" | "Invited" | "Dropped" }) => {
+      const { error } = await supabase.from("students").update({ status }).eq("id", studentId);
       raise(error);
     },
     onSuccess: () => {
@@ -487,13 +535,20 @@ export function useIssueCertificates(trainingId: string) {
   return useMutation({
     mutationFn: async (studentIds: string[]) => {
       if (studentIds.length === 0) return;
-      const { error } = await supabase
+      // ignoreDuplicates + select only returns rows that were actually
+      // (re-)inserted, so already-issued certificates don't get re-emailed.
+      const { data: issued, error } = await supabase
         .from("certificates")
         .upsert(
           studentIds.map((studentId) => ({ training_id: trainingId, student_id: studentId, issued_at: new Date().toISOString() })),
           { onConflict: "training_id,student_id", ignoreDuplicates: true },
-        );
+        )
+        .select("student_id, share_token");
       raise(error);
+
+      for (const c of issued ?? []) {
+        notifyStudent({ type: "certificate", training_id: trainingId, student_id: c.student_id, token: c.share_token });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["certificates", trainingId] });
@@ -577,6 +632,7 @@ export interface TestQuestionInput {
   question: string;
   options: { label: string; text: string }[];
   correct_option: string;
+  module: string | null;
   position: number;
 }
 
@@ -622,6 +678,10 @@ export function usePublishTestAttempts(trainingId: string) {
         )
         .select("*");
       raise(error);
+
+      for (const a of data ?? []) {
+        notifyStudent({ type: "test", training_id: trainingId, student_id: a.student_id, phase: a.phase, token: a.share_token });
+      }
       return data ?? [];
     },
     onSuccess: () => {
@@ -695,6 +755,10 @@ export function useSendSurveys(trainingId: string) {
         )
         .select("*");
       raise(error);
+
+      for (const r of data ?? []) {
+        notifyStudent({ type: "survey", training_id: trainingId, student_id: r.student_id, level: r.level, token: r.share_token });
+      }
       return data ?? [];
     },
     onSuccess: () => {
