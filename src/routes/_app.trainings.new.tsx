@@ -40,6 +40,42 @@ function monthShort(dateStr: string) {
   return new Date(dateStr).toLocaleString("en", { month: "short" });
 }
 
+function formatSessionDate(dateStr: string) {
+  if (!dateStr) return "—";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return `${d} ${new Date(y, m - 1, d).toLocaleString("en", { month: "short" })}`;
+}
+
+type VenueValue = { type: "entreprise" | "gomycode" | "autre"; detail: string };
+const emptyVenue: VenueValue = { type: "entreprise", detail: "" };
+
+function formatVenue(v: VenueValue) {
+  if (v.type === "gomycode") return v.detail ? `Chez GoMyCode – ${v.detail}` : "Chez GoMyCode";
+  if (v.type === "autre") return v.detail || "Autre";
+  return "Chez entreprise";
+}
+
+function VenueField({ value, onChange }: { value: VenueValue; onChange: (v: VenueValue) => void }) {
+  return (
+    <div className="space-y-2">
+      <Select value={value.type} onValueChange={(t) => onChange({ type: t as VenueValue["type"], detail: "" })}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="entreprise">Chez entreprise</SelectItem>
+          <SelectItem value="gomycode">Chez GoMyCode</SelectItem>
+          <SelectItem value="autre">Autre</SelectItem>
+        </SelectContent>
+      </Select>
+      {value.type === "gomycode" && (
+        <Input placeholder="Préciser le hackerspace" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
+      )}
+      {value.type === "autre" && (
+        <Input placeholder="Préciser le lieu" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
+      )}
+    </div>
+  );
+}
+
 function NewTraining() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -70,19 +106,42 @@ function NewTraining() {
 
   // step 2 state
   const [mode, setMode] = useState<"single" | "recurring">("single");
-  const [singles, setSingles] = useState<{ date: string; start: string; end: string; tz: string; venue: string; module: string }[]>([
-    { date: "", start: "09:00", end: "17:00", tz: "Europe/Paris", venue: "", module: "" },
-  ]);
+  const [singleForm, setSingleForm] = useState<{ date: string; start: string; end: string; tz: string; venue: VenueValue; module: string }>({
+    date: "", start: "09:00", end: "13:00", tz: "Europe/Paris", venue: emptyVenue, module: "",
+  });
+  const [singles, setSingles] = useState<typeof singleForm[]>([]);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [dateError, setDateError] = useState(false);
   const [weeks, setWeeks] = useState(4);
-  const [recurring, setRecurring] = useState<{ day: string; start: string; end: string; venue: string }[]>([
-    { day: "Mon", start: "09:00", end: "12:00", venue: "" },
+  const [recurring, setRecurring] = useState<{ day: string; start: string; end: string; venue: VenueValue }[]>([
+    { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue },
   ]);
+
+  function handleAddSingle() {
+    if (!singleForm.date) {
+      setDateError(true);
+      return;
+    }
+    setDateError(false);
+    if (editingIndex !== null) {
+      setSingles(singles.map((s, i) => (i === editingIndex ? singleForm : s)));
+      setEditingIndex(null);
+    } else {
+      setSingles([...singles, singleForm]);
+    }
+    setSingleForm({ ...singleForm, date: "", module: "" });
+  }
+
+  function handleEditSingle(i: number) {
+    setSingleForm(singles[i]);
+    setEditingIndex(i);
+  }
 
   function buildSessions(): NewSessionInput[] {
     if (mode === "single") {
       return singles
         .filter((s) => s.date)
-        .map((s) => ({ date: s.date, start_time: s.start, end_time: s.end, timezone: s.tz || "Europe/Paris", venue: s.venue, module: s.module }));
+        .map((s) => ({ date: s.date, start_time: s.start, end_time: s.end, timezone: s.tz || "Europe/Paris", venue: formatVenue(s.venue), module: s.module }));
     }
     const anchor = startDate ? new Date(startDate) : new Date();
     const sessions: NewSessionInput[] = [];
@@ -92,7 +151,7 @@ function NewTraining() {
       for (let week = 0; week < weeks; week++) {
         const d = new Date(first);
         d.setDate(d.getDate() + week * 7);
-        sessions.push({ date: iso(d), start_time: row.start, end_time: row.end, timezone: "Europe/Paris", venue: row.venue, module: "" });
+        sessions.push({ date: iso(d), start_time: row.start, end_time: row.end, timezone: "Europe/Paris", venue: formatVenue(row.venue), module: "" });
       }
     }
     return sessions;
@@ -179,7 +238,7 @@ function NewTraining() {
               <Field label="Client"><Input placeholder="Acme Corp" value={client} onChange={(e) => setClient(e.target.value)} /></Field>
               <Field label="Country">
                 <Select value={country} onValueChange={setCountry}><SelectTrigger><SelectValue placeholder="Select country" /></SelectTrigger>
-                  <SelectContent><SelectItem value="France">France</SelectItem><SelectItem value="Germany">Germany</SelectItem><SelectItem value="UK">UK</SelectItem><SelectItem value="USA">USA</SelectItem></SelectContent>
+                  <SelectContent><SelectItem value="Tunisia">Tunisia</SelectItem><SelectItem value="Algeria">Algeria</SelectItem><SelectItem value="Saudi Arabia">Saudi Arabia</SelectItem><SelectItem value="Senegal">Senegal</SelectItem><SelectItem value="Morocco">Morocco</SelectItem><SelectItem value="Kenya">Kenya</SelectItem><SelectItem value="Canary Islands">Canary Islands</SelectItem></SelectContent>
                 </Select>
               </Field>
               <Field label="Training venue"><Input placeholder="Paris HQ" value={venue} onChange={(e) => setVenue(e.target.value)} /></Field>
@@ -275,21 +334,80 @@ function NewTraining() {
                 <TabsTrigger value="single">Single</TabsTrigger>
                 <TabsTrigger value="recurring">Recurring</TabsTrigger>
               </TabsList>
-              <TabsContent value="single" className="space-y-3 pt-4">
-                {singles.map((s, i) => (
-                  <div key={i} className="grid grid-cols-2 gap-3 rounded-lg border p-3 sm:grid-cols-6">
-                    <Input type="date" value={s.date} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, date: e.target.value } : x))} />
-                    <Input type="time" value={s.start} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, start: e.target.value } : x))} />
-                    <Input type="time" value={s.end} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, end: e.target.value } : x))} />
-                    <Input placeholder="Timezone" value={s.tz} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, tz: e.target.value } : x))} />
-                    <Input placeholder="Venue" value={s.venue} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, venue: e.target.value } : x))} />
-                    <div className="flex gap-2">
-                      <Input placeholder="Module" value={s.module} onChange={(e) => setSingles(singles.map((x, j) => j === i ? { ...x, module: e.target.value } : x))} />
-                      <Button variant="ghost" size="icon" onClick={() => setSingles(singles.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button>
-                    </div>
+              <TabsContent value="single" className="space-y-5 pt-4">
+                <div>
+                  <p className="mb-3 text-sm font-medium">Add a session</p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
+                    <Field label="Date">
+                      <Input
+                        type="date"
+                        value={singleForm.date}
+                        onChange={(e) => { setSingleForm({ ...singleForm, date: e.target.value }); setDateError(false); }}
+                        onClick={(e) => e.currentTarget.showPicker?.()}
+                        className={dateError ? "border-destructive" : undefined}
+                      />
+                      {dateError && <p className="mt-1 text-xs text-destructive">Pick a date first.</p>}
+                    </Field>
+                    <Field label="Start – End" className="sm:col-span-2">
+                      <div className="flex gap-1">
+                        <Input type="time" value={singleForm.start} onChange={(e) => setSingleForm({ ...singleForm, start: e.target.value })} />
+                        <Input type="time" value={singleForm.end} onChange={(e) => setSingleForm({ ...singleForm, end: e.target.value })} />
+                      </div>
+                    </Field>
+                    <Field label="Timezone">
+                      <Input placeholder="Timezone" value={singleForm.tz} onChange={(e) => setSingleForm({ ...singleForm, tz: e.target.value })} />
+                    </Field>
+                    <Field label="Venue">
+                      <VenueField value={singleForm.venue} onChange={(v) => setSingleForm({ ...singleForm, venue: v })} />
+                    </Field>
+                    <Field label="Module (optional)">
+                      <Input placeholder="Module" value={singleForm.module} onChange={(e) => setSingleForm({ ...singleForm, module: e.target.value })} />
+                    </Field>
                   </div>
-                ))}
-                <Button variant="outline" size="sm" onClick={() => setSingles([...singles, { date: "", start: "09:00", end: "17:00", tz: "Europe/Paris", venue: "", module: "" }])}><Plus className="mr-1 h-4 w-4" />Add session</Button>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <p className="text-xs text-muted-foreground">Sessions are added one at a time.</p>
+                    <Button variant="outline" size="sm" onClick={handleAddSingle}>
+                      <Plus className="mr-1 h-4 w-4" />{editingIndex !== null ? "Update session" : "Add session"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-2 text-sm font-medium">Sessions added ({singles.length})</p>
+                  {singles.length === 0 ? (
+                    <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">No sessions added yet.</p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Date</th>
+                            <th className="px-3 py-2 text-left">Time</th>
+                            <th className="px-3 py-2 text-left">Venue</th>
+                            <th className="px-3 py-2 text-left">Module</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {singles.map((s, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="px-3 py-2">{formatSessionDate(s.date)}</td>
+                              <td className="px-3 py-2">{s.start}–{s.end}</td>
+                              <td className="px-3 py-2">{formatVenue(s.venue)}</td>
+                              <td className="px-3 py-2">{s.module || "—"}</td>
+                              <td className="px-3 py-2">
+                                <div className="flex justify-end gap-1">
+                                  <Button variant="outline" size="sm" onClick={() => handleEditSingle(i)}>Edit</Button>
+                                  <Button variant="ghost" size="icon" onClick={() => setSingles(singles.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </TabsContent>
               <TabsContent value="recurring" className="space-y-3 pt-4">
                 <div className="flex items-end gap-3">
@@ -311,7 +429,7 @@ function NewTraining() {
                           </td>
                           <td className="px-3 py-2"><Input type="time" value={r.start} onChange={(e) => setRecurring(recurring.map((x, j) => j === i ? { ...x, start: e.target.value } : x))} className="w-32" /></td>
                           <td className="px-3 py-2"><Input type="time" value={r.end} onChange={(e) => setRecurring(recurring.map((x, j) => j === i ? { ...x, end: e.target.value } : x))} className="w-32" /></td>
-                          <td className="px-3 py-2"><Input value={r.venue} onChange={(e) => setRecurring(recurring.map((x, j) => j === i ? { ...x, venue: e.target.value } : x))} placeholder="Venue" /></td>
+                          <td className="px-3 py-2"><VenueField value={r.venue} onChange={(v) => setRecurring(recurring.map((x, j) => j === i ? { ...x, venue: v } : x))} /></td>
                           <td className="px-3 py-2"><Button variant="ghost" size="icon" onClick={() => setRecurring(recurring.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></td>
                         </tr>
                       ))}
@@ -319,7 +437,7 @@ function NewTraining() {
                   </table>
                 </div>
                 <div className="flex justify-between">
-                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
+                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
                   <p className="self-center text-xs text-muted-foreground">{weeks * recurring.length} sessions will be generated on Create.</p>
                 </div>
               </TabsContent>

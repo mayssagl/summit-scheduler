@@ -86,8 +86,17 @@ export interface TestRow {
   correct_option: string | null;
   module: string | null;
   position: number;
+  module: string | null;
   created_by: string | null;
   created_at: string;
+}
+
+export interface TestPublicationRow {
+  training_id: string;
+  phase: "pre" | "post";
+  status: "draft" | "published";
+  published_at: string | null;
+  created_by: string | null;
 }
 
 export interface ResourceRow {
@@ -632,8 +641,8 @@ export interface TestQuestionInput {
   question: string;
   options: { label: string; text: string }[];
   correct_option: string;
-  module: string | null;
   position: number;
+  module?: string | null;
 }
 
 export function useAddTestQuestion(trainingId: string) {
@@ -657,6 +666,19 @@ export function useDeleteTestQuestion(trainingId: string, phase: "pre" | "post")
   return useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("tests").delete().eq("id", id);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tests", trainingId, phase] });
+    },
+  });
+}
+
+export function useUpdateTestQuestion(trainingId: string, phase: "pre" | "post") {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...patch }: Partial<TestQuestionInput> & { id: string }) => {
+      const { error } = await supabase.from("tests").update(patch).eq("id", id);
       raise(error);
     },
     onSuccess: () => {
@@ -703,6 +725,121 @@ export function useTestAttempts(trainingId: string, phase: "pre" | "post") {
       return data ?? [];
     },
     enabled: !!trainingId,
+  });
+}
+
+export function useTestPublication(trainingId: string, phase: "pre" | "post") {
+  return useQuery({
+    queryKey: ["test-publication", trainingId, phase],
+    queryFn: async (): Promise<TestPublicationRow | null> => {
+      const { data, error } = await supabase
+        .from("test_publications")
+        .select("*")
+        .eq("training_id", trainingId)
+        .eq("phase", phase)
+        .maybeSingle();
+      raise(error);
+      return data;
+    },
+    enabled: !!trainingId,
+  });
+}
+
+export function useUnpublishTest(trainingId: string, phase: "pre" | "post") {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("test_publications")
+        .update({ status: "draft", published_at: null })
+        .eq("training_id", trainingId)
+        .eq("phase", phase);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["test-publication", trainingId, phase] });
+    },
+  });
+}
+
+export interface SendTestResult {
+  sent: number;
+  skipped: number;
+  failed?: number;
+}
+
+export function useSendTest(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ phase }: { phase: "pre" | "post" }): Promise<SendTestResult> => {
+      const { data, error } = await supabase.functions.invoke("send-test", {
+        body: { training_id: trainingId, phase },
+      });
+      if (error) {
+        let message = error.message;
+        const context = (error as { context?: Response }).context;
+        if (context && typeof context.json === "function") {
+          try {
+            const body = await context.json();
+            if (body?.error) message = body.error;
+          } catch {
+            // no JSON body to read from — fall back to the generic error message
+          }
+        }
+        throw new Error(message);
+      }
+      if (data?.error) throw new Error(data.error);
+      return data as SendTestResult;
+    },
+    onSuccess: (_data, { phase }) => {
+      queryClient.invalidateQueries({ queryKey: ["test-attempts", trainingId, phase] });
+      queryClient.invalidateQueries({ queryKey: ["test-publication", trainingId, phase] });
+    },
+  });
+}
+
+export interface ModuleScore {
+  module: string;
+  pre_score: number | null;
+  post_score: number | null;
+  gain: number | null;
+}
+
+// Ports the module-bucket aggregation from generate-group-insights/index.ts so the
+// L2 results tab can compute the same numbers via a plain RLS-permitted read,
+// without invoking an edge function just for arithmetic.
+export function computeModuleScores(
+  preTests: TestRow[],
+  postTests: TestRow[],
+  preAttempts: TestAttemptRow[],
+  postAttempts: TestAttemptRow[],
+): ModuleScore[] {
+  const buckets = new Map<string, { preCorrect: number; preTotal: number; postCorrect: number; postTotal: number }>();
+  const score = (tests: TestRow[], attempts: TestAttemptRow[], phase: "pre" | "post") => {
+    for (const attempt of attempts) {
+      if (!attempt.submitted_at) continue;
+      for (const q of tests) {
+        const key = q.module?.trim() || "Overall";
+        if (!buckets.has(key)) buckets.set(key, { preCorrect: 0, preTotal: 0, postCorrect: 0, postTotal: 0 });
+        const bucket = buckets.get(key)!;
+        const isCorrect = attempt.answers?.[q.id] !== undefined && attempt.answers[q.id] === q.correct_option;
+        if (phase === "pre") {
+          bucket.preTotal += 1;
+          if (isCorrect) bucket.preCorrect += 1;
+        } else {
+          bucket.postTotal += 1;
+          if (isCorrect) bucket.postCorrect += 1;
+        }
+      }
+    }
+  };
+  score(preTests, preAttempts, "pre");
+  score(postTests, postAttempts, "post");
+
+  return Array.from(buckets.entries()).map(([module, b]) => {
+    const pre = b.preTotal > 0 ? Math.round((b.preCorrect / b.preTotal) * 100) : null;
+    const post = b.postTotal > 0 ? Math.round((b.postCorrect / b.postTotal) * 100) : null;
+    return { module, pre_score: pre, post_score: post, gain: pre !== null && post !== null ? post - pre : null };
   });
 }
 

@@ -2,6 +2,17 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { StudentShell } from "@/components/student-card";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
@@ -128,10 +139,24 @@ function TestPage() {
         {i < questions.length - 1 ? (
           <Button onClick={() => setI(i + 1)} disabled={!answered}>Next</Button>
         ) : (
-          <Button onClick={handleSubmit} disabled={!answered || submitting}>{submitting ? "Submitting…" : "Submit"}</Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button disabled={!answered || submitting}>{submitting ? "Submitting…" : "Submit"}</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Submit your answers?</AlertDialogTitle>
+                <AlertDialogDescription>You can't change them after this.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleSubmit}>Submit</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         )}
       </div>
-      <p className="mt-4 text-xs text-muted-foreground">Your score isn't shown to you.</p>
+      <p className="mt-4 text-xs text-muted-foreground">No login required · your score isn't shared with you.</p>
     </StudentShell>
   );
 }

@@ -11,12 +11,13 @@ import {
   useGenerateGroupInsights,
   useGroupInsights,
   useIssueCertificates,
-  usePublishTestAttempts,
   useSendSurveys,
+  useSendTest,
   useSetAttendance,
   useSurveyQuestions,
   useSurveyResponses,
   useTestAttempts,
+  useTestPublication,
   useTraining,
   useTrainingAttendance,
   useTrainingCertificates,
@@ -24,11 +25,14 @@ import {
   useTrainingSessions,
   useTrainingStudents,
   useTrainingTests,
+  useUnpublishTest,
   useUpdateCertificateTemplate,
-  useUpdateStudentStatus,
   uploadTrainingFile,
   type GroupInsightsContent,
   type StudentRow,
+  type TestAttemptRow,
+  type TestPublicationRow,
+  type TestRow,
   type TrainingWithInstructor,
 } from "@/lib/queries";
 import { downloadCertificate, downloadCertificatesBundle, downloadGroupReport } from "@/lib/export-html";
@@ -42,6 +46,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -146,7 +161,7 @@ function TrainingDetail() {
 function Overview({ t }: { t: TrainingWithInstructor }) {
   const { data: sessions = [] } = useTrainingSessions(t.id);
   const { data: students = [] } = useTrainingStudents(t.id);
-  const enrolled = students.filter((s) => s.status === "Active").length;
+  const enrolled = students.filter((s) => s.status !== "Dropped").length;
   const initials = t.instructor_name
     ? t.instructor_name.split(" ").map((p) => p[0]).join("")
     : "—";
@@ -391,7 +406,7 @@ function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null
   const addStudents = useAddStudents(t.id);
   const updateStatus = useUpdateStudentStatus(t.id);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const active = students.filter((s) => s.status === "Active").length;
+  const active = students.filter((s) => s.status !== "Dropped").length;
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -720,14 +735,6 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
   const submittedCount = responses.filter((r) => r.submitted_at).length;
   const activeStudents = students.filter((s) => s.status === "Active");
 
-  const chartQuestion = questions.find((q) => q.type === (level === "l1" ? "1-5" : "Frequency"));
-  const chartCategories = level === "l1" ? ["1", "2", "3", "4", "5"] : FREQUENCY_OPTIONS;
-  const chartCounts = chartCategories.map(
-    (cat) => responses.filter((r) => chartQuestion && String(r.answers[chartQuestion.id]) === cat).length,
-  );
-
-  const autoSendDate = t.end_date ? new Date(new Date(t.end_date).getTime() + 30 * 24 * 60 * 60 * 1000) : null;
-
   async function handleSend() {
     if (activeStudents.length === 0) {
       toast.info("No active students to send to");
@@ -815,42 +822,10 @@ function buildStatusTone(status: string): "active" | "pending" | "muted" {
 function SurveysInside({ t }: { t: TrainingWithInstructor }) {
   const [sub, setSub] = useState("l1");
   const { data: students = [] } = useTrainingStudents(t.id);
-  const { data: preQuestions = [] } = useTrainingTests(t.id, "pre");
-  const { data: postQuestions = [] } = useTrainingTests(t.id, "post");
   const { data: preAttempts = [] } = useTestAttempts(t.id, "pre");
   const { data: postAttempts = [] } = useTestAttempts(t.id, "post");
   const preDone = preAttempts.filter((a) => a.submitted_at).length;
   const postDone = postAttempts.filter((a) => a.submitted_at).length;
-  const activeCount = students.filter((s) => s.status === "Active").length;
-
-  const moduleScores = useMemo(() => {
-    const buckets = new Map<string, { preCorrect: number; preTotal: number; postCorrect: number; postTotal: number }>();
-    for (const attempt of [...preAttempts, ...postAttempts]) {
-      if (!attempt.submitted_at) continue;
-      const phaseTests = attempt.phase === "pre" ? preQuestions : postQuestions;
-      for (const q of phaseTests) {
-        const key = q.module?.trim() || "Overall";
-        if (!buckets.has(key)) buckets.set(key, { preCorrect: 0, preTotal: 0, postCorrect: 0, postTotal: 0 });
-        const b = buckets.get(key)!;
-        const isCorrect = attempt.answers?.[q.id] !== undefined && attempt.answers[q.id] === q.correct_option;
-        if (attempt.phase === "pre") {
-          b.preTotal += 1;
-          if (isCorrect) b.preCorrect += 1;
-        } else {
-          b.postTotal += 1;
-          if (isCorrect) b.postCorrect += 1;
-        }
-      }
-    }
-    return Array.from(buckets.entries()).map(([module, b]) => {
-      const pre = b.preTotal > 0 ? Math.round((b.preCorrect / b.preTotal) * 100) : null;
-      const post = b.postTotal > 0 ? Math.round((b.postCorrect / b.postTotal) * 100) : null;
-      return { module, pre, post, gain: pre !== null && post !== null ? post - pre : null };
-    });
-  }, [preAttempts, postAttempts, preQuestions, postQuestions]);
-
-  const preStatus = testBuildStatus(preQuestions.length, preAttempts.length);
-  const postStatus = testBuildStatus(postQuestions.length, postAttempts.length);
 
   return (
     <Card>
@@ -859,46 +834,88 @@ function SurveysInside({ t }: { t: TrainingWithInstructor }) {
           <TabsList><TabsTrigger value="l1">L1 Satisfaction</TabsTrigger><TabsTrigger value="l2">L2 Learning</TabsTrigger><TabsTrigger value="l3">L3 Behaviour</TabsTrigger></TabsList>
           <TabsContent value="l1"><SurveyLevelPanel t={t} level="l1" students={students} /></TabsContent>
           <TabsContent value="l2" className="space-y-4 pt-4">
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Pre:</span>
-              <Pill tone={buildStatusTone(preStatus)}>{preStatus}</Pill>
-              <span className="text-muted-foreground">Post:</span>
-              <Pill tone={buildStatusTone(postStatus)}>{postStatus}</Pill>
-              <span className="text-xs text-muted-foreground">— built by the instructor</span>
+            <div className="grid gap-3 sm:grid-cols-4">
+              <StatTile label="Pre-test" value={preDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
+              <StatTile label="Post-test" value={postDone > 0 ? <StatusBadge status="Active" /> : <StatusBadge status="Pending" />} />
+              <StatTile label="Learning gain" value={`+${t.learning_gain}%`} />
+              <StatTile label="Pre / Post completed" value={`${preDone} / ${postDone}`} />
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <StatTile label="Avg learning gain" value={`+${t.learning_gain}%`} />
-              <StatTile label="Questions / test" value={Math.max(preQuestions.length, postQuestions.length)} />
-              <StatTile label="Completed post" value={`${postDone}/${activeCount}`} />
-            </div>
-            {moduleScores.length > 0 && (
-              <Card>
-                <CardHeader><CardTitle className="text-sm">Per-skill mastery (post)</CardTitle></CardHeader>
-                <CardContent className="p-0">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                      <tr><th className="px-4 py-2 text-left font-medium">Module</th><th className="px-4 py-2 text-left font-medium">Pre</th><th className="px-4 py-2 text-left font-medium">Post</th><th className="px-4 py-2 text-left font-medium">Gain</th></tr>
-                    </thead>
-                    <tbody>
-                      {moduleScores.map((m, i) => (
-                        <tr key={m.module} className="border-t">
-                          <td className="px-4 py-2 font-medium">{i + 1}. {m.module}</td>
-                          <td className="px-4 py-2 text-muted-foreground">{m.pre !== null ? `${m.pre}%` : "—"}</td>
-                          <td className="px-4 py-2 text-muted-foreground">{m.post !== null ? `${m.post}%` : "—"}</td>
-                          <td className="px-4 py-2 font-medium">{m.gain !== null ? `${m.gain >= 0 ? "+" : ""}${m.gain}` : "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </CardContent>
-              </Card>
-            )}
-            <p className="text-xs text-muted-foreground">Admin &amp; DM can see whether the pre/post tests are built (not built / draft / published).</p>
+            <p className="text-sm text-muted-foreground">Manage pre/post-test questions and publishing from the instructor's Tests tab.</p>
           </TabsContent>
           <TabsContent value="l3"><SurveyLevelPanel t={t} level="l3" students={students} /></TabsContent>
         </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function l2StatusLabel(pub: TestPublicationRow | null | undefined, questionCount: number) {
+  if (pub?.status === "published") return "Published";
+  if (pub || questionCount > 0) return "Draft";
+  return "Not built";
+}
+
+function L2ResultsPanel({ t }: { t: TrainingWithInstructor }) {
+  const { data: students = [] } = useTrainingStudents(t.id);
+  const { data: prePub } = useTestPublication(t.id, "pre");
+  const { data: postPub } = useTestPublication(t.id, "post");
+  const { data: preTests = [] } = useTrainingTests(t.id, "pre");
+  const { data: postTests = [] } = useTrainingTests(t.id, "post");
+  const { data: preAttempts = [] } = useTestAttempts(t.id, "pre");
+  const { data: postAttempts = [] } = useTestAttempts(t.id, "post");
+
+  const enrolledCount = students.filter((s) => s.status !== "Dropped").length;
+  const preSubmitted = preAttempts.filter((a) => a.submitted_at);
+  const postSubmitted = postAttempts.filter((a) => a.submitted_at);
+
+  const avgScore = (rows: TestAttemptRow[]) =>
+    rows.length > 0 ? rows.reduce((sum, a) => sum + (a.score ?? 0), 0) / rows.length : null;
+  const preAvg = avgScore(preSubmitted);
+  const postAvg = avgScore(postSubmitted);
+  const learningGain = preAvg !== null && postAvg !== null ? Math.round(postAvg - preAvg) : null;
+
+  const moduleScores = computeModuleScores(preTests, postTests, preAttempts, postAttempts);
+  const hasAnyAttempts = preSubmitted.length > 0 || postSubmitted.length > 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <span className="font-medium">Pre: {l2StatusLabel(prePub, preTests.length)}</span>
+        <span className="text-muted-foreground">·</span>
+        <span className="font-medium">Post: {l2StatusLabel(postPub, postTests.length)}</span>
+        <span className="text-xs text-muted-foreground">— built by the instructor</span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatTile label="Avg learning gain" value={learningGain !== null ? `${learningGain > 0 ? "+" : ""}${learningGain}%` : "—"} />
+        <StatTile label="Questions / test" value={`${preTests.length} / ${postTests.length}`} />
+        <StatTile label="Completed post" value={`${postSubmitted.length} / ${enrolledCount}`} />
+      </div>
+
+      {!hasAnyAttempts ? (
+        <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">No attempts yet.</CardContent></Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <tr><th className="px-4 py-2 text-left font-medium">Module</th><th className="px-4 py-2 text-left font-medium">Pre %</th><th className="px-4 py-2 text-left font-medium">Post %</th><th className="px-4 py-2 text-left font-medium">Gain</th></tr>
+              </thead>
+              <tbody>
+                {moduleScores.map((m) => (
+                  <tr key={m.module} className="border-t">
+                    <td className="px-4 py-2 font-medium">{m.module}</td>
+                    <td className="px-4 py-2">{m.pre_score !== null ? `${m.pre_score}%` : "—"}</td>
+                    <td className="px-4 py-2">{m.post_score !== null ? `${m.post_score}%` : "—"}</td>
+                    <td className="px-4 py-2">{m.gain !== null ? `${m.gain > 0 ? "+" : ""}${m.gain}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -995,20 +1012,29 @@ function PayoutInside({ t }: { t: TrainingWithInstructor }) {
 }
 
 const OPTION_LETTERS = ["A", "B", "C", "D"];
+const MIN_TEST_QUESTIONS = 10;
+
+function questionIssue(q: TestRow): string | null {
+  if (!q.question.trim()) return "missing question text";
+  if (!Array.isArray(q.options) || q.options.length !== 4 || q.options.some((o) => !o.text.trim())) return "missing option text";
+  if (!q.correct_option) return "no correct answer marked";
+  return null;
+}
 
 function Tests({ t }: { t: TrainingWithInstructor }) {
   const [phase, setPhase] = useState<"pre" | "post">("pre");
   const { data: questions = [] } = useTrainingTests(t.id, phase);
   const { data: students = [] } = useTrainingStudents(t.id);
   const { data: attempts = [] } = useTestAttempts(t.id, phase);
+  const { data: publication } = useTestPublication(t.id, phase);
   const addQuestion = useAddTestQuestion(t.id);
+  const updateQuestion = useUpdateTestQuestion(t.id, phase);
   const deleteQuestion = useDeleteTestQuestion(t.id, phase);
   const publish = usePublishTestAttempts(t.id);
 
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState(["", "", "", ""]);
   const [correctIndex, setCorrectIndex] = useState(0);
-  const [module, setModule] = useState<string>(t.modules[0] ?? "");
   const [publishing, setPublishing] = useState(false);
 
   async function handleAddQuestion() {
@@ -1021,42 +1047,49 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
       question,
       options: OPTION_LETTERS.map((label, i) => ({ label, text: options[i] })),
       correct_option: OPTION_LETTERS[correctIndex],
-      module: module || null,
       position: questions.length,
+      module: null,
     });
-    setQuestion("");
-    setOptions(["", "", "", ""]);
-    setCorrectIndex(0);
-    toast.success("Question added");
+    setIndex(questions.length);
+  }
+
+  async function handleDeleteQuestion(id: string) {
+    await deleteQuestion.mutateAsync(id);
+    setIndex((i) => Math.max(0, i - 1));
   }
 
   async function handlePublish() {
-    const activeStudents = students.filter((s) => s.status === "Active");
-    if (activeStudents.length === 0) {
-      toast.info("No active students to publish to");
-      return;
-    }
-    if (questions.length === 0) {
-      toast.error("Add at least one question before publishing");
-      return;
-    }
-    setPublishing(true);
+    setSending(true);
     try {
-      await publish.mutateAsync({ phase, studentIds: activeStudents.map((s) => s.id) });
-      toast.success(`Test links ready for ${activeStudents.length} student(s)`);
+      const result = await sendTest.mutateAsync({ phase });
+      const parts = [`Sent to ${result.sent}`];
+      if (result.skipped) parts.push(`skipped ${result.skipped} (already submitted)`);
+      if (result.failed) parts.push(`${result.failed} email(s) failed to send`);
+      toast.success(parts.join(" · "));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to publish test");
     } finally {
-      setPublishing(false);
+      setSending(false);
     }
   }
 
-  const activeStudents = students.filter((s) => s.status === "Active");
-  const attemptByStudent = useMemo(() => new Map(attempts.map((a) => [a.student_id, a])), [attempts]);
+  async function handleUnpublish() {
+    await unpublish.mutateAsync();
+    toast.success("Test moved back to draft — editing unlocked");
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={phase} onValueChange={(v) => setPhase(v as "pre" | "post")}><TabsList><TabsTrigger value="pre">Pre-test</TabsTrigger><TabsTrigger value="post">Post-test</TabsTrigger></TabsList></Tabs>
-        <span className="text-sm text-muted-foreground">{questions.length} question(s)</span>
+        <Tabs value={phase} onValueChange={(v) => switchPhase(v as "pre" | "post")}><TabsList><TabsTrigger value="pre">Pre-test</TabsTrigger><TabsTrigger value="post">Post-test</TabsTrigger></TabsList></Tabs>
+        <div className="flex items-center gap-2">
+          {isPublished ? (
+            <span className="rounded-full bg-[color-mix(in_oklab,var(--status-active)_25%,white)] px-2 py-0.5 text-xs text-[color:var(--status-active-fg)] ring-1 ring-inset ring-transparent">Published</span>
+          ) : (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground ring-1 ring-inset ring-border">Draft</span>
+          )}
+          <span className="text-sm text-muted-foreground">{questions.length} question(s)</span>
+        </div>
       </div>
 
       {questions.length > 0 && (
@@ -1065,7 +1098,7 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
             {questions.map((q, i) => (
               <div key={q.id} className="flex items-center justify-between gap-3 border-b p-3 last:border-b-0">
                 <div>
-                  <p className="text-sm font-medium">{i + 1}. {q.question} {q.module && <span className="font-normal text-muted-foreground">· {q.module}</span>}</p>
+                  <p className="text-sm font-medium">{i + 1}. {q.question}</p>
                   <p className="text-xs text-muted-foreground">{q.options.map((o) => `${o.label}. ${o.text}`).join(" · ")} — correct: {q.correct_option}</p>
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => deleteQuestion.mutate(q.id)}><Trash2 className="h-4 w-4" /></Button>
@@ -1078,17 +1111,6 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
       <Card>
         <CardContent className="space-y-5 pt-6">
           <div className="space-y-1.5"><Label>Question</Label><Textarea rows={2} placeholder="Write the question…" value={question} onChange={(e) => setQuestion(e.target.value)} /></div>
-          <div className="space-y-1.5">
-            <Label>Module (optional)</Label>
-            {t.modules.length > 0 ? (
-              <Select value={module} onValueChange={setModule}>
-                <SelectTrigger className="sm:w-64"><SelectValue placeholder="No module" /></SelectTrigger>
-                <SelectContent>{t.modules.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-              </Select>
-            ) : (
-              <Input className="sm:w-64" placeholder="e.g. Framing" value={module} onChange={(e) => setModule(e.target.value)} />
-            )}
-          </div>
           <div className="space-y-3">
             {OPTION_LETTERS.map((l, i) => (
               <div key={l} className="flex items-center gap-3 rounded-md border p-3">
