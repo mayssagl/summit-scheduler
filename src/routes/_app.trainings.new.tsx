@@ -2,14 +2,23 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { RoleRoute } from "@/components/role-route";
+import { ModuleChips } from "@/components/module-chips";
 import { useAuth } from "@/lib/auth";
-import { useCreateTrainingWithSessions, useProfilesByRole, type NewSessionInput } from "@/lib/queries";
+import {
+  useCreateTrainingWithSessions,
+  useProfilesByRole,
+  HACKERSPACES_BY_COUNTRY,
+  TRAINING_COUNTRIES,
+  type NewSessionInput,
+  type TrainingVenueType,
+} from "@/lib/queries";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowLeft, ArrowRight, FileText, Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +85,57 @@ function VenueField({ value, onChange }: { value: VenueValue; onChange: (v: Venu
   );
 }
 
+function TrainingVenueField({
+  country,
+  venueType,
+  venueDetail,
+  onVenueTypeChange,
+  onVenueDetailChange,
+}: {
+  country: string;
+  venueType: TrainingVenueType;
+  venueDetail: string;
+  onVenueTypeChange: (v: TrainingVenueType) => void;
+  onVenueDetailChange: (v: string) => void;
+}) {
+  const hackerspaces = HACKERSPACES_BY_COUNTRY[country] ?? [];
+  const noHackerspacesForCountry = !!country && hackerspaces.length === 0;
+
+  const gomycodePill = (
+    <DocPill active={venueType === "gomycode"} onClick={() => onVenueTypeChange("gomycode")} disabled={noHackerspacesForCountry}>
+      At GoMyCode
+    </DocPill>
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <DocPill active={venueType === "client_site"} onClick={() => onVenueTypeChange("client_site")}>At the client's</DocPill>
+        {noHackerspacesForCountry ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild><span>{gomycodePill}</span></TooltipTrigger>
+              <TooltipContent>No GoMyCode hackerspace in this country</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          gomycodePill
+        )}
+        <DocPill active={venueType === "other"} onClick={() => onVenueTypeChange("other")}>Other</DocPill>
+      </div>
+      {venueType === "gomycode" && (
+        <Select value={venueDetail} onValueChange={onVenueDetailChange} disabled={!country}>
+          <SelectTrigger><SelectValue placeholder={country ? "Select hackerspace" : "Select a country first"} /></SelectTrigger>
+          <SelectContent>{hackerspaces.map((h) => <SelectItem key={h} value={h}>{h}</SelectItem>)}</SelectContent>
+        </Select>
+      )}
+      {venueType === "other" && (
+        <Input placeholder="Specify the venue" value={venueDetail} onChange={(e) => onVenueDetailChange(e.target.value)} />
+      )}
+    </div>
+  );
+}
+
 function NewTraining() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -88,14 +148,15 @@ function NewTraining() {
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
   const [country, setCountry] = useState("");
-  const [venue, setVenue] = useState("");
+  const [venueType, setVenueType] = useState<TrainingVenueType>("client_site");
+  const [venueDetail, setVenueDetail] = useState("");
   const [language, setLanguage] = useState<"EN" | "FR">("EN");
   const [numStudents, setNumStudents] = useState(12);
   const [completionThreshold, setCompletionThreshold] = useState(70);
   const [instructorId, setInstructorId] = useState<string | undefined>(undefined);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [modulesText, setModulesText] = useState("");
+  const [modules, setModules] = useState<string[]>([]);
   const [docType, setDocType] = useState<"po" | "contract">("po");
   const [poRef, setPoRef] = useState("");
   const [poValue, setPoValue] = useState("");
@@ -113,8 +174,8 @@ function NewTraining() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [dateError, setDateError] = useState(false);
   const [weeks, setWeeks] = useState(4);
-  const [recurring, setRecurring] = useState<{ day: string; start: string; end: string; venue: VenueValue }[]>([
-    { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue },
+  const [recurring, setRecurring] = useState<{ day: string; start: string; end: string; venue: VenueValue; module: string }[]>([
+    { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue, module: "" },
   ]);
 
   function handleAddSingle() {
@@ -151,10 +212,20 @@ function NewTraining() {
       for (let week = 0; week < weeks; week++) {
         const d = new Date(first);
         d.setDate(d.getDate() + week * 7);
-        sessions.push({ date: iso(d), start_time: row.start, end_time: row.end, timezone: "Europe/Paris", venue: formatVenue(row.venue), module: "" });
+        sessions.push({ date: iso(d), start_time: row.start, end_time: row.end, timezone: "Europe/Paris", venue: formatVenue(row.venue), module: row.module });
       }
     }
     return sessions;
+  }
+
+  const venueIncomplete = venueType !== "client_site" && !venueDetail.trim();
+
+  function handleCountryChange(next: string) {
+    setCountry(next);
+    if (venueType === "gomycode") {
+      setVenueDetail("");
+      if ((HACKERSPACES_BY_COUNTRY[next] ?? []).length === 0) setVenueType("client_site");
+    }
   }
 
   function buildTrainingInput(userId: string) {
@@ -162,14 +233,15 @@ function NewTraining() {
       name,
       client,
       country,
-      venue,
+      venue_type: venueType,
+      venue_detail: venueType === "client_site" ? null : venueDetail,
       language,
       num_students: numStudents,
       completion_threshold: completionThreshold,
       instructor_id: instructorId ?? null,
       start_date: startDate || null,
       end_date: endDate || null,
-      modules: modulesText.split(",").map((m) => m.trim()).filter(Boolean),
+      modules,
       po_ref: poRef,
       po_value: poValue ? Number(poValue) : null,
       doc_start_date: docStartDate || null,
@@ -234,14 +306,22 @@ function NewTraining() {
           <CardHeader><CardTitle>Training details</CardTitle></CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Name"><Input placeholder="e.g. Negotiation Skills" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+              <Field label="Training Name"><Input placeholder="e.g. Negotiation Skills" value={name} onChange={(e) => setName(e.target.value)} /></Field>
               <Field label="Client"><Input placeholder="Acme Corp" value={client} onChange={(e) => setClient(e.target.value)} /></Field>
               <Field label="Country">
-                <Select value={country} onValueChange={setCountry}><SelectTrigger><SelectValue placeholder="Select country" /></SelectTrigger>
-                  <SelectContent><SelectItem value="Tunisia">Tunisia</SelectItem><SelectItem value="Algeria">Algeria</SelectItem><SelectItem value="Saudi Arabia">Saudi Arabia</SelectItem><SelectItem value="Senegal">Senegal</SelectItem><SelectItem value="Morocco">Morocco</SelectItem><SelectItem value="Kenya">Kenya</SelectItem><SelectItem value="Canary Islands">Canary Islands</SelectItem></SelectContent>
+                <Select value={country} onValueChange={handleCountryChange}><SelectTrigger><SelectValue placeholder="Select country" /></SelectTrigger>
+                  <SelectContent>{TRAINING_COUNTRIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
-              <Field label="Training venue"><Input placeholder="Paris HQ" value={venue} onChange={(e) => setVenue(e.target.value)} /></Field>
+              <Field label="Training venue" className="sm:col-span-2">
+                <TrainingVenueField
+                  country={country}
+                  venueType={venueType}
+                  venueDetail={venueDetail}
+                  onVenueTypeChange={(v) => { setVenueType(v); setVenueDetail(""); }}
+                  onVenueDetailChange={setVenueDetail}
+                />
+              </Field>
               <Field label="Training language">
                 <Select value={language} onValueChange={(v) => setLanguage(v as "EN" | "FR")}><SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="EN">English</SelectItem><SelectItem value="FR">Français</SelectItem></SelectContent>
@@ -261,7 +341,7 @@ function NewTraining() {
               <Field label="Training end date">
                 <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} onClick={(e) => e.currentTarget.showPicker?.()} />
               </Field>
-              <Field label="Training modules (optional)" className="sm:col-span-2"><Input placeholder="Comma-separated: Foundations, Tactics, Closing" value={modulesText} onChange={(e) => setModulesText(e.target.value)} /></Field>
+              <Field label="Modules (optional)" className="sm:col-span-2"><ModuleChips value={modules} onChange={setModules} /></Field>
             </div>
 
             <div className="rounded-lg border bg-muted/30 p-4">
@@ -313,12 +393,12 @@ function NewTraining() {
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
             <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:items-center sm:justify-between">
-              <Button variant="outline" onClick={handleSaveAsPending} disabled={!name || !client || savingPending}>
+              <Button variant="outline" onClick={handleSaveAsPending} disabled={!name || !client || venueIncomplete || savingPending}>
                 {savingPending ? "Saving…" : "Save as Pending"}
               </Button>
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" asChild><Link to="/trainings">Cancel</Link></Button>
-                <Button onClick={() => setStep(2)} disabled={!name || !client}>
+                <Button onClick={() => setStep(2)} disabled={!name || !client || venueIncomplete}>
                   Save & add sessions<ArrowRight className="ml-1.5 h-4 w-4" />
                 </Button>
               </div>
@@ -361,7 +441,10 @@ function NewTraining() {
                       <VenueField value={singleForm.venue} onChange={(v) => setSingleForm({ ...singleForm, venue: v })} />
                     </Field>
                     <Field label="Module (optional)">
-                      <Input placeholder="Module" value={singleForm.module} onChange={(e) => setSingleForm({ ...singleForm, module: e.target.value })} />
+                      <Select value={singleForm.module} onValueChange={(v) => setSingleForm({ ...singleForm, module: v })} disabled={modules.length === 0}>
+                        <SelectTrigger><SelectValue placeholder={modules.length === 0 ? "No modules yet" : "Select a module"} /></SelectTrigger>
+                        <SelectContent>{modules.map((m, i) => <SelectItem key={m} value={m}>{i + 1}. {m}</SelectItem>)}</SelectContent>
+                      </Select>
                     </Field>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-2">
@@ -416,7 +499,7 @@ function NewTraining() {
                 <div className="overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                      <tr><th className="px-3 py-2 text-left">Weekday</th><th className="px-3 py-2 text-left">Start</th><th className="px-3 py-2 text-left">End</th><th className="px-3 py-2 text-left">Venue</th><th /></tr>
+                      <tr><th className="px-3 py-2 text-left">Weekday</th><th className="px-3 py-2 text-left">Start</th><th className="px-3 py-2 text-left">End</th><th className="px-3 py-2 text-left">Venue</th><th className="px-3 py-2 text-left">Module</th><th /></tr>
                     </thead>
                     <tbody>
                       {recurring.map((r, i) => (
@@ -430,6 +513,12 @@ function NewTraining() {
                           <td className="px-3 py-2"><Input type="time" value={r.start} onChange={(e) => setRecurring(recurring.map((x, j) => j === i ? { ...x, start: e.target.value } : x))} className="w-32" /></td>
                           <td className="px-3 py-2"><Input type="time" value={r.end} onChange={(e) => setRecurring(recurring.map((x, j) => j === i ? { ...x, end: e.target.value } : x))} className="w-32" /></td>
                           <td className="px-3 py-2"><VenueField value={r.venue} onChange={(v) => setRecurring(recurring.map((x, j) => j === i ? { ...x, venue: v } : x))} /></td>
+                          <td className="px-3 py-2">
+                            <Select value={r.module} onValueChange={(v) => setRecurring(recurring.map((x, j) => j === i ? { ...x, module: v } : x))} disabled={modules.length === 0}>
+                              <SelectTrigger className="w-40"><SelectValue placeholder={modules.length === 0 ? "No modules yet" : "Optional"} /></SelectTrigger>
+                              <SelectContent>{modules.map((m, mi) => <SelectItem key={m} value={m}>{mi + 1}. {m}</SelectItem>)}</SelectContent>
+                            </Select>
+                          </td>
                           <td className="px-3 py-2"><Button variant="ghost" size="icon" onClick={() => setRecurring(recurring.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></td>
                         </tr>
                       ))}
@@ -437,7 +526,7 @@ function NewTraining() {
                   </table>
                 </div>
                 <div className="flex justify-between">
-                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
+                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue, module: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
                   <p className="self-center text-xs text-muted-foreground">{weeks * recurring.length} sessions will be generated on Create.</p>
                 </div>
               </TabsContent>
@@ -472,19 +561,22 @@ function DocPill({
   onClick,
   icon,
   children,
+  disabled,
 }: {
   active: boolean;
   onClick: () => void;
   icon?: React.ReactNode;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-        active ? "border-primary text-primary" : "border-input text-muted-foreground hover:text-foreground",
+        disabled ? "cursor-not-allowed border-input text-muted-foreground/50" : active ? "border-primary text-primary" : "border-input text-muted-foreground hover:text-foreground",
       )}
     >
       {icon ?? <span className={cn("h-1.5 w-1.5 rounded-full", active ? "bg-primary" : "bg-muted-foreground/40")} />}

@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useAuth, type AppRole } from "@/lib/auth";
 import {
@@ -8,6 +8,7 @@ import {
   useAddStudents,
   useAddTestQuestion,
   useDeleteTestQuestion,
+  formatTrainingVenue,
   useGenerateGroupInsights,
   useGroupInsights,
   useIssueCertificates,
@@ -16,6 +17,7 @@ import {
   useSetAttendance,
   useSurveyQuestions,
   useSurveyResponses,
+  useUpdateStudentStatus,
   useTestAttempts,
   useTestPublication,
   useTraining,
@@ -25,8 +27,12 @@ import {
   useTrainingSessions,
   useTrainingStudents,
   useTrainingTests,
+  useTrainingCompletion,
   useUnpublishTest,
   useUpdateCertificateTemplate,
+  useUpdateTestQuestion,
+  useUpdateTrainingModules,
+  computeModuleScores,
   uploadTrainingFile,
   type GroupInsightsContent,
   type StudentRow,
@@ -37,6 +43,7 @@ import {
 } from "@/lib/queries";
 import { downloadCertificate, downloadCertificatesBundle, downloadGroupReport } from "@/lib/export-html";
 import { StatusBadge } from "@/components/status-badge";
+import { ModuleChips } from "@/components/module-chips";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,11 +67,83 @@ import {
 import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// Set by the single <ManualCopyDialog /> mounted in TrainingDetail — lets this
+// plain (non-component) function fall back to an in-app dialog when both the
+// Clipboard API and the execCommand fallback are blocked by the environment.
+let manualCopyListener: ((url: string) => void) | null = null;
+
+async function tryClipboardApi(url: string): Promise<boolean> {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryExecCommandCopy(url: string): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = url;
+    textarea.style.position = "fixed";
+    textarea.style.top = "-1000px";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function copyShareLink(path: string) {
   const url = `${window.location.origin}${path}`;
-  navigator.clipboard.writeText(url).then(
-    () => toast.success("Link copied to clipboard"),
-    () => toast.error("Couldn't copy link"),
+  (async () => {
+    if (await tryClipboardApi(url)) {
+      toast.success("Link copied to clipboard");
+      return;
+    }
+    if (tryExecCommandCopy(url)) {
+      toast.success("Link copied to clipboard");
+      return;
+    }
+    if (manualCopyListener) {
+      manualCopyListener(url);
+    } else {
+      toast.error("Couldn't copy link automatically");
+    }
+  })();
+}
+
+function ManualCopyDialog() {
+  const [url, setUrl] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    manualCopyListener = setUrl;
+    return () => {
+      manualCopyListener = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (url) requestAnimationFrame(() => inputRef.current?.select());
+  }, [url]);
+
+  return (
+    <Dialog open={url !== null} onOpenChange={(open) => !open && setUrl(null)}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Copy this link</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">Automatic copying isn't available here. Select the link below and copy it manually.</p>
+        <Input ref={inputRef} readOnly value={url ?? ""} onFocus={(e) => e.currentTarget.select()} />
+        <DialogFooter><Button onClick={() => setUrl(null)}>Done</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -154,6 +233,7 @@ function TrainingDetail() {
           </>
         )}
       </Tabs>
+      <ManualCopyDialog />
     </div>
   );
 }
@@ -179,7 +259,7 @@ function Overview({ t }: { t: TrainingWithInstructor }) {
         <CardContent className="space-y-1 text-sm">
           <p><span className="text-muted-foreground">Dates:</span> {t.start_date ? `${t.start_date} → ${t.end_date}` : "—"}</p>
           <p><span className="text-muted-foreground">Sessions:</span> {sessions.length}</p>
-          <p><span className="text-muted-foreground">Venue:</span> {t.venue}</p>
+          <p><span className="text-muted-foreground">Venue:</span> {formatTrainingVenue(t.venue_type, t.venue_detail, t.client)}</p>
           <p><span className="text-muted-foreground">Language:</span> {t.language}</p>
         </CardContent>
       </Card>
@@ -204,7 +284,96 @@ function Overview({ t }: { t: TrainingWithInstructor }) {
           </div>
         </CardContent>
       </Card>
+      <TrainingModulesCard t={t} />
     </div>
+  );
+}
+
+// Chapters of the training (e.g. "1. Framing", "2. Anchoring") — editable
+// here, referenced by session.module and tests.module elsewhere. Those
+// references store the module text verbatim and don't cascade, so removing
+// a module still in use needs a confirmation, not a silent rename/delete.
+function TrainingModulesCard({ t }: { t: TrainingWithInstructor }) {
+  const { data: sessions = [] } = useTrainingSessions(t.id);
+  const { data: preTests = [] } = useTrainingTests(t.id, "pre");
+  const { data: postTests = [] } = useTrainingTests(t.id, "post");
+  const updateModules = useUpdateTrainingModules(t.id);
+  const [draft, setDraft] = useState<string[]>(t.modules);
+  const [pendingRemoval, setPendingRemoval] = useState<{
+    next: string[];
+    refs: { name: string; sessionCount: number; questionCount: number }[];
+  } | null>(null);
+
+  useEffect(() => setDraft(t.modules), [t.modules]);
+
+  function referencesFor(name: string) {
+    const sessionCount = sessions.filter((s) => s.module === name).length;
+    const questionCount = [...preTests, ...postTests].filter((q) => q.module === name).length;
+    return { name, sessionCount, questionCount };
+  }
+
+  function handleChange(next: string[]) {
+    const removed = draft.filter((m) => !next.includes(m));
+    const refs = removed.map(referencesFor).filter((r) => r.sessionCount > 0 || r.questionCount > 0);
+    if (refs.length > 0) {
+      setPendingRemoval({ next, refs });
+      return;
+    }
+    setDraft(next);
+  }
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(t.modules);
+
+  async function handleSave() {
+    try {
+      await updateModules.mutateAsync(draft);
+      toast.success("Modules updated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update modules");
+    }
+  }
+
+  return (
+    <Card className="lg:col-span-3">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-base">Modules</CardTitle>
+        {dirty && (
+          <Button size="sm" onClick={handleSave} disabled={updateModules.isPending}>
+            {updateModules.isPending ? "Saving…" : "Save changes"}
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent>
+        <ModuleChips value={draft} onChange={handleChange} />
+      </CardContent>
+
+      <AlertDialog open={pendingRemoval !== null} onOpenChange={(open) => !open && setPendingRemoval(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove a module still in use?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingRemoval?.refs.map((r) => (
+                <span key={r.name} className="block">
+                  "{r.name}" is used by {r.sessionCount} session{r.sessionCount === 1 ? "" : "s"} and {r.questionCount} question{r.questionCount === 1 ? "" : "s"}.
+                </span>
+              ))}
+              {" "}Removing it here won't change those — they'll keep showing the old module text, it just won't be selectable for new sessions or questions anymore.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingRemoval(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingRemoval) setDraft(pendingRemoval.next);
+                setPendingRemoval(null);
+              }}
+            >
+              Remove anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
   );
 }
 
@@ -238,7 +407,7 @@ function Sessions({
   const [mode, setMode] = useState<"single" | "recurring">("single");
   const [form, setForm] = useState({ date: "", start_time: "09:00", end_time: "17:00", venue: "", module: "" });
   const [weeks, setWeeks] = useState(4);
-  const [recurring, setRecurring] = useState([{ day: "Mon", start: "09:00", end: "12:00", venue: "" }]);
+  const [recurring, setRecurring] = useState([{ day: "Mon", start: "09:00", end: "12:00", venue: "", module: "" }]);
   const [generating, setGenerating] = useState(false);
 
   async function handleAdd() {
@@ -263,7 +432,7 @@ function Sessions({
             end_time: row.end,
             timezone: DEFAULT_TIMEZONE,
             venue: row.venue,
-            module: "",
+            module: row.module,
           });
         }
       }
@@ -285,11 +454,15 @@ function Sessions({
           </CardHeader>
           <CardContent>
             {mode === "single" ? (
-              <div className="grid gap-3 sm:grid-cols-5">
+              <div className="grid gap-3 sm:grid-cols-6">
                 <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
                 <Input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
                 <Input type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} />
                 <Input placeholder="Venue" value={form.venue} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
+                <Select value={form.module} onValueChange={(v) => setForm({ ...form, module: v })} disabled={t.modules.length === 0}>
+                  <SelectTrigger><SelectValue placeholder={t.modules.length === 0 ? "No modules yet" : "Module (optional)"} /></SelectTrigger>
+                  <SelectContent>{t.modules.map((m, i) => <SelectItem key={m} value={m}>{i + 1}. {m}</SelectItem>)}</SelectContent>
+                </Select>
                 <Button onClick={handleAdd} disabled={!form.date || addSession.isPending}>Add</Button>
               </div>
             ) : (
@@ -300,7 +473,7 @@ function Sessions({
                 <div className="overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                      <tr><th className="px-3 py-2 text-left">Weekday</th><th className="px-3 py-2 text-left">Start</th><th className="px-3 py-2 text-left">End</th><th className="px-3 py-2 text-left">Venue</th><th /></tr>
+                      <tr><th className="px-3 py-2 text-left">Weekday</th><th className="px-3 py-2 text-left">Start</th><th className="px-3 py-2 text-left">End</th><th className="px-3 py-2 text-left">Venue</th><th className="px-3 py-2 text-left">Module</th><th /></tr>
                     </thead>
                     <tbody>
                       {recurring.map((r, i) => (
@@ -314,6 +487,12 @@ function Sessions({
                           <td className="px-3 py-2"><Input type="time" value={r.start} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, start: e.target.value } : x)))} className="w-32" /></td>
                           <td className="px-3 py-2"><Input type="time" value={r.end} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, end: e.target.value } : x)))} className="w-32" /></td>
                           <td className="px-3 py-2"><Input value={r.venue} onChange={(e) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, venue: e.target.value } : x)))} placeholder="Venue" /></td>
+                          <td className="px-3 py-2">
+                            <Select value={r.module} onValueChange={(v) => setRecurring(recurring.map((x, j) => (j === i ? { ...x, module: v } : x)))} disabled={t.modules.length === 0}>
+                              <SelectTrigger className="w-40"><SelectValue placeholder={t.modules.length === 0 ? "No modules yet" : "Optional"} /></SelectTrigger>
+                              <SelectContent>{t.modules.map((m, mi) => <SelectItem key={m} value={m}>{mi + 1}. {m}</SelectItem>)}</SelectContent>
+                            </Select>
+                          </td>
                           <td className="px-3 py-2"><Button variant="ghost" size="icon" onClick={() => setRecurring(recurring.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button></td>
                         </tr>
                       ))}
@@ -321,7 +500,7 @@ function Sessions({
                   </table>
                 </div>
                 <div className="flex justify-between">
-                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
+                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: "", module: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
                   <Button onClick={handleGenerate} disabled={generating}>{generating ? "Generating…" : "Generate"}</Button>
                 </div>
               </div>
@@ -405,6 +584,7 @@ function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null
   const { data: students = [] } = useTrainingStudents(t.id);
   const addStudents = useAddStudents(t.id);
   const updateStatus = useUpdateStudentStatus(t.id);
+  const completion = useTrainingCompletion(t.id);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const active = students.filter((s) => s.status !== "Dropped").length;
 
@@ -440,7 +620,7 @@ function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null
                 <td className="px-4 py-3 font-medium">{s.name}</td>
                 <td className="px-4 py-3 text-muted-foreground">{s.email}</td>
                 <td className="px-4 py-3 text-muted-foreground">{s.dept}</td>
-                {role === "instructor" && <td className="px-4 py-3 text-muted-foreground">{s.attendance_pct}%</td>}
+                {role === "instructor" && <td className="px-4 py-3 text-muted-foreground">{completion.pct(s.id)}%</td>}
                 <td className="px-4 py-3">
                   {role === "instructor" ? (
                     <span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Active" ? "bg-[color-mix(in_oklab,var(--status-active)_25%,white)] text-[color:var(--status-active-fg)] ring-transparent" : "bg-muted text-muted-foreground ring-border")}>{s.status}</span>
@@ -479,6 +659,7 @@ function Attendance({
   const { data: students = [] } = useTrainingStudents(t.id);
   const { data: attendance = [] } = useTrainingAttendance(t.id);
   const setAttendance = useSetAttendance(t.id);
+  const completion = useTrainingCompletion(t.id);
 
   const attendanceMap = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -513,8 +694,7 @@ function Attendance({
             </thead>
             <tbody>
               {students.slice(0, 12).map((st) => {
-                const presentCount = visibleSessions.filter((s) => attendanceMap.get(`${s.id}:${st.id}`)).length;
-                const pct = visibleSessions.length ? Math.round((presentCount / visibleSessions.length) * 100) : 0;
+                const pct = completion.pct(st.id);
                 return (
                   <tr key={st.id} className="border-t">
                     <td className="px-4 py-3 font-medium">{st.name}</td>
@@ -552,6 +732,7 @@ function Attendance({
 function Certificates({ t }: { t: TrainingWithInstructor }) {
   const { data: students = [] } = useTrainingStudents(t.id);
   const { data: certificates = [] } = useTrainingCertificates(t.id);
+  const completion = useTrainingCompletion(t.id);
   const updateTemplate = useUpdateCertificateTemplate(t.id);
   const issueCertificates = useIssueCertificates(t.id);
   const [open, setOpen] = useState(false);
@@ -599,7 +780,7 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
   }
 
   async function handleIssueAll() {
-    const eligible = students.filter((s) => s.cert_issued && !certByStudent.has(s.id));
+    const eligible = students.filter((s) => completion.pct(s.id) >= t.completion_threshold && !certByStudent.has(s.id));
     if (eligible.length === 0) {
       toast.info("No new certificates to issue");
       return;
@@ -608,6 +789,8 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
     try {
       await issueCertificates.mutateAsync(eligible.map((s) => s.id));
       toast.success(`Issued ${eligible.length} certificate(s)`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to issue certificates");
     } finally {
       setIssuing(false);
     }
@@ -669,7 +852,7 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
                 return (
                   <tr key={s.id} className="border-t">
                     <td className="px-4 py-3 font-medium">{s.name}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.completion_pct}%</td>
+                    <td className="px-4 py-3 text-muted-foreground">{completion.pct(s.id)}%</td>
                     <td className="px-4 py-3">{cert ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
@@ -734,6 +917,21 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
   const responseByStudent = useMemo(() => new Map(responses.map((r) => [r.student_id, r])), [responses]);
   const submittedCount = responses.filter((r) => r.submitted_at).length;
   const activeStudents = students.filter((s) => s.status === "Active");
+
+  const chartQuestion = questions.find(
+    (q) => q.type === "1-5" && responses.some((r) => r.answers?.[q.id] !== undefined),
+  );
+  const chartCategories = FREQUENCY_OPTIONS;
+  const chartCounts = chartQuestion
+    ? FREQUENCY_OPTIONS.map((_, i) => responses.filter((r) => Number(r.answers?.[chartQuestion.id]) === i + 1).length)
+    : [];
+
+  const autoSendDate = useMemo(() => {
+    if (level !== "l3" || !t.end_date) return null;
+    const d = new Date(t.end_date);
+    d.setDate(d.getDate() + 30);
+    return d;
+  }, [level, t.end_date]);
 
   async function handleSend() {
     if (activeStudents.length === 0) {
@@ -1030,23 +1228,34 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
   const addQuestion = useAddTestQuestion(t.id);
   const updateQuestion = useUpdateTestQuestion(t.id, phase);
   const deleteQuestion = useDeleteTestQuestion(t.id, phase);
-  const publish = usePublishTestAttempts(t.id);
+  const unpublish = useUnpublishTest(t.id, phase);
+  const sendTest = useSendTest(t.id);
 
-  const [question, setQuestion] = useState("");
-  const [options, setOptions] = useState(["", "", "", ""]);
-  const [correctIndex, setCorrectIndex] = useState(0);
-  const [publishing, setPublishing] = useState(false);
+  const [index, setIndex] = useState(0);
+  const [sending, setSending] = useState(false);
+
+  const isPublished = publication?.status === "published";
+  const activeStudents = students.filter((s) => s.status !== "Dropped");
+  const attemptByStudent = useMemo(() => new Map(attempts.map((a) => [a.student_id, a])), [attempts]);
+
+  const clampedIndex = Math.min(index, Math.max(questions.length - 1, 0));
+  const current = questions[clampedIndex] ?? null;
+
+  const issues = questions.map((q, i) => ({ i, problem: questionIssue(q) })).filter((x) => x.problem);
+  const tooFew = questions.length < MIN_TEST_QUESTIONS;
+  const canPublish = !tooFew && issues.length === 0 && !isPublished;
+
+  function switchPhase(next: "pre" | "post") {
+    setPhase(next);
+    setIndex(0);
+  }
 
   async function handleAddQuestion() {
-    if (!question || options.some((o) => !o)) {
-      toast.error("Fill in the question and all four options");
-      return;
-    }
     await addQuestion.mutateAsync({
       phase,
-      question,
-      options: OPTION_LETTERS.map((label, i) => ({ label, text: options[i] })),
-      correct_option: OPTION_LETTERS[correctIndex],
+      question: "",
+      options: OPTION_LETTERS.map((label) => ({ label, text: "" })),
+      correct_option: null,
       position: questions.length,
       module: null,
     });
@@ -1092,45 +1301,124 @@ function Tests({ t }: { t: TrainingWithInstructor }) {
         </div>
       </div>
 
-      {questions.length > 0 && (
+      {isPublished && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
+          <p>This test is published — students may already be answering it. Editing is locked.</p>
+          <AlertDialog>
+            <AlertDialogTrigger asChild><Button variant="outline" size="sm">Edit as new draft</Button></AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Move this test back to draft?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  You'll be able to edit questions again, but you'll need to re-publish for students to be notified of any changes. Already-submitted attempts keep their recorded score and aren't affected.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleUnpublish}>Edit as new draft</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      )}
+
+      {!current && (
+        <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">No questions yet. Add your first one below.</CardContent></Card>
+      )}
+
+      {current && (
         <Card>
-          <CardContent className="space-y-2 p-0">
-            {questions.map((q, i) => (
-              <div key={q.id} className="flex items-center justify-between gap-3 border-b p-3 last:border-b-0">
-                <div>
-                  <p className="text-sm font-medium">{i + 1}. {q.question}</p>
-                  <p className="text-xs text-muted-foreground">{q.options.map((o) => `${o.label}. ${o.text}`).join(" · ")} — correct: {q.correct_option}</p>
-                </div>
-                <Button variant="ghost" size="icon" onClick={() => deleteQuestion.mutate(q.id)}><Trash2 className="h-4 w-4" /></Button>
+          <CardContent className="space-y-5 pt-6">
+            <div className="flex items-center justify-between text-xs uppercase tracking-wider text-muted-foreground">
+              <span>Question {clampedIndex + 1} of {questions.length}</span>
+              <Button variant="ghost" size="sm" className="text-destructive" disabled={isPublished} onClick={() => handleDeleteQuestion(current.id)}><Trash2 className="mr-1 h-3.5 w-3.5" />Delete</Button>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Question</Label>
+              <Textarea
+                rows={2}
+                placeholder="Write the question…"
+                disabled={isPublished}
+                value={current.question}
+                onChange={(e) => updateQuestion.mutate({ id: current.id, question: e.target.value })}
+              />
+            </div>
+            <div className="space-y-3">
+              {OPTION_LETTERS.map((l) => {
+                const opt = current.options.find((o) => o.label === l) ?? { label: l, text: "" };
+                return (
+                  <div key={l} className="flex items-center gap-3 rounded-md border p-3">
+                    <input
+                      type="radio"
+                      name={`correct-${current.id}`}
+                      checked={current.correct_option === l}
+                      disabled={isPublished}
+                      onChange={() => updateQuestion.mutate({ id: current.id, correct_option: l })}
+                      className="h-4 w-4 accent-[color:var(--primary)]"
+                    />
+                    <span className="font-semibold">{l}.</span>
+                    <Input
+                      placeholder={`Option ${l}`}
+                      className="border-0 shadow-none focus-visible:ring-0"
+                      disabled={isPublished}
+                      value={opt.text}
+                      onChange={(e) => {
+                        const nextOptions = OPTION_LETTERS.map((label) => {
+                          const existing = current.options.find((o) => o.label === label) ?? { label, text: "" };
+                          return label === l ? { label, text: e.target.value } : existing;
+                        });
+                        updateQuestion.mutate({ id: current.id, options: nextOptions });
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="space-y-1.5">
+              <Label>Module (optional)</Label>
+              <Select
+                value={current.module ?? "__none"}
+                onValueChange={(v) => updateQuestion.mutate({ id: current.id, module: v === "__none" ? null : v })}
+                disabled={isPublished}
+              >
+                <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder="No module" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none">No module</SelectItem>
+                  {t.modules.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" disabled={clampedIndex === 0} onClick={() => setIndex(clampedIndex - 1)}>Back</Button>
+                <Button variant="outline" size="sm" disabled={clampedIndex >= questions.length - 1} onClick={() => setIndex(clampedIndex + 1)}>Next</Button>
               </div>
-            ))}
+              <Button variant="outline" size="sm" disabled={isPublished} onClick={handleAddQuestion}><Plus className="mr-1 h-4 w-4" />Add question</Button>
+            </div>
           </CardContent>
         </Card>
       )}
 
-      <Card>
-        <CardContent className="space-y-5 pt-6">
-          <div className="space-y-1.5"><Label>Question</Label><Textarea rows={2} placeholder="Write the question…" value={question} onChange={(e) => setQuestion(e.target.value)} /></div>
-          <div className="space-y-3">
-            {OPTION_LETTERS.map((l, i) => (
-              <div key={l} className="flex items-center gap-3 rounded-md border p-3">
-                <input type="radio" name="correct" checked={correctIndex === i} onChange={() => setCorrectIndex(i)} className="h-4 w-4 accent-[color:var(--primary)]" />
-                <span className="font-semibold">{l}.</span>
-                <Input
-                  placeholder={`Option ${l}`}
-                  className="border-0 shadow-none focus-visible:ring-0"
-                  value={options[i]}
-                  onChange={(e) => setOptions(options.map((o, j) => (j === i ? e.target.value : o)))}
-                />
+      {!isPublished && (
+        <Card>
+          <CardContent className="space-y-3 pt-6">
+            {tooFew && <p className="text-sm text-destructive">Add at least {MIN_TEST_QUESTIONS} questions before publishing ({questions.length} so far).</p>}
+            {issues.length > 0 && (
+              <div className="text-sm text-destructive">
+                <p>These questions need attention before publishing:</p>
+                <ul className="ml-4 list-disc">
+                  {issues.map(({ i, problem }) => <li key={i}>Question {i + 1}: {problem}</li>)}
+                </ul>
               </div>
-            ))}
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" onClick={handleAddQuestion} disabled={addQuestion.isPending}><Plus className="mr-1 h-4 w-4" />Add question</Button>
-            <Button onClick={handlePublish} disabled={publishing}>{publishing ? "Publishing…" : "Publish & send"}</Button>
-          </div>
-        </CardContent>
-      </Card>
+            )}
+            <div className="flex justify-end">
+              <Button onClick={handlePublish} disabled={!canPublish || sending}>
+                <Send className="mr-1.5 h-4 w-4" />{sending ? "Publishing…" : "Publish & send"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {attempts.length > 0 && (
         <Card>

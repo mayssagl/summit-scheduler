@@ -3,12 +3,43 @@ import { supabase } from "@/lib/supabase";
 import type { Status } from "@/lib/status";
 import type { AppRole } from "@/lib/auth";
 
+export type TrainingVenueType = "client_site" | "gomycode" | "other";
+
+// GoMyCode hackerspace locations by country, offered when venue_type is
+// 'gomycode' — edit freely. Also the single source of truth for the training
+// Country field: a country with an empty list has no GoMyCode presence yet.
+// NOTE: hackerspace names are placeholders pending confirmation against
+// GoMyCode's actual current locations — verify before relying on them.
+export const HACKERSPACES_BY_COUNTRY: Record<string, string[]> = {
+  "Tunisia": ["Lac 1", "El Menzah", "Bardo", "El Mourouj", "Sousse", "Kairouan", "Boumhel", "Tataouine", "Nabeul"],
+  "Algeria": ["Alger", "Annaba", "Bab Ezzouar"],
+  "Morocco": ["Casablanca Maarif"],
+  "Saudi Arabia": [],
+  "Senegal": ["Dakar"],
+  "Kenya": ["Nairobi"],
+  "Canary Islands": ["Abidjan Rivera"],
+  "Nigeria": ["Yaba","Ikeja"],
+};
+
+export const TRAINING_COUNTRIES = Object.keys(HACKERSPACES_BY_COUNTRY);
+
+export function formatTrainingVenue(
+  venueType: TrainingVenueType,
+  venueDetail: string | null,
+  clientName?: string | null,
+): string {
+  if (venueType === "gomycode") return `GoMyCode — ${venueDetail ?? ""}`;
+  if (venueType === "other") return venueDetail || "—";
+  return clientName ? `At ${clientName}` : "At the client's";
+}
+
 export interface TrainingRow {
   id: string;
   name: string;
   client: string;
   country: string | null;
-  venue: string | null;
+  venue_type: TrainingVenueType;
+  venue_detail: string | null;
   language: "EN" | "FR";
   num_students: number;
   start_date: string | null;
@@ -60,9 +91,6 @@ export interface StudentRow {
   email: string;
   dept: string | null;
   status: "Active" | "Invited" | "Dropped";
-  attendance_pct: number;
-  completion_pct: number;
-  cert_issued: boolean;
   created_at: string;
 }
 
@@ -86,7 +114,6 @@ export interface TestRow {
   correct_option: string | null;
   module: string | null;
   position: number;
-  module: string | null;
   created_by: string | null;
   created_at: string;
 }
@@ -221,7 +248,8 @@ export interface NewTrainingInput {
   name: string;
   client: string;
   country: string;
-  venue: string;
+  venue_type: TrainingVenueType;
+  venue_detail: string | null;
   language: "EN" | "FR";
   num_students: number;
   completion_threshold: number;
@@ -277,6 +305,20 @@ export function useCreateTrainingWithSessions() {
       return trainingId;
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["trainings"] });
+    },
+  });
+}
+
+export function useUpdateTrainingModules(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (modules: string[]) => {
+      const { error } = await supabase.from("trainings").update({ modules }).eq("id", trainingId);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["training", trainingId] });
       queryClient.invalidateQueries({ queryKey: ["trainings"] });
     },
   });
@@ -446,6 +488,25 @@ export function useSetAttendance(trainingId: string) {
       queryClient.invalidateQueries({ queryKey: ["attendance", trainingId] });
     },
   });
+}
+
+// students.completion_pct / attendance_pct / cert_issued are legacy stored
+// columns that attendance marking never updates, so they're not part of
+// StudentRow — completion is derived live from sessions + attendance here,
+// the single source of truth for both the Attendance and Certificates tabs.
+export interface TrainingCompletion {
+  totalSessions: number;
+  presentCount: (studentId: string) => number;
+  pct: (studentId: string) => number;
+}
+
+export function useTrainingCompletion(trainingId: string): TrainingCompletion {
+  const { data: sessions = [] } = useTrainingSessions(trainingId);
+  const { data: attendance = [] } = useTrainingAttendance(trainingId);
+  const totalSessions = sessions.length;
+  const presentCount = (studentId: string) => attendance.filter((a) => a.student_id === studentId && a.present).length;
+  const pct = (studentId: string) => (totalSessions > 0 ? Math.round((presentCount(studentId) / totalSessions) * 100) : 0);
+  return { totalSessions, presentCount, pct };
 }
 
 // ── certificates ─────────────────────────────────────────────────
@@ -640,7 +701,7 @@ export interface TestQuestionInput {
   phase: "pre" | "post";
   question: string;
   options: { label: string; text: string }[];
-  correct_option: string;
+  correct_option: string | null;
   position: number;
   module?: string | null;
 }

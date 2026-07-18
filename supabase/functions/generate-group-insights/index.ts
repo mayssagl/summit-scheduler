@@ -15,7 +15,6 @@ function json(body: unknown, status = 200) {
 
 interface StudentRow {
   id: string;
-  completion_pct: number;
   status: string;
 }
 
@@ -107,14 +106,16 @@ Deno.serve(async (req) => {
   // ── cohort data (only queried now that the caller is authorized) ──────────
   const [
     { data: students },
+    { data: sessions },
     { data: attendanceRows },
     { data: tests },
     { data: attempts },
     { data: surveyQuestions },
     { data: surveyResponses },
   ] = await Promise.all([
-    admin.from("students").select("id, completion_pct, status").eq("training_id", trainingId) as Promise<{ data: StudentRow[] | null }>,
-    admin.from("attendance").select("present").eq("training_id", trainingId) as Promise<{ data: { present: boolean }[] | null }>,
+    admin.from("students").select("id, status").eq("training_id", trainingId) as Promise<{ data: StudentRow[] | null }>,
+    admin.from("sessions").select("id").eq("training_id", trainingId) as Promise<{ data: { id: string }[] | null }>,
+    admin.from("attendance").select("student_id, present").eq("training_id", trainingId) as Promise<{ data: { student_id: string; present: boolean }[] | null }>,
     admin.from("tests").select("id, phase, module, correct_option").eq("training_id", trainingId) as Promise<{ data: TestRow[] | null }>,
     admin
       .from("test_attempts")
@@ -130,9 +131,20 @@ Deno.serve(async (req) => {
       .not("submitted_at", "is", null) as Promise<{ data: SurveyResponseRow[] | null }>,
   ]);
 
+  // students.completion_pct is a legacy stored column attendance marking never
+  // updates — derive completion live from sessions + attendance instead, the
+  // same source of truth the app's Certificates tab uses.
+  const totalSessions = sessions?.length ?? 0;
+  const presentCountByStudent = new Map<string, number>();
+  for (const a of attendanceRows ?? []) {
+    if (a.present) presentCountByStudent.set(a.student_id, (presentCountByStudent.get(a.student_id) ?? 0) + 1);
+  }
+  const completionPct = (studentId: string) =>
+    totalSessions > 0 ? Math.round(((presentCountByStudent.get(studentId) ?? 0) / totalSessions) * 100) : 0;
+
   const activeStudents = (students ?? []).filter((s) => s.status !== "Dropped");
   const threshold = training.completion_threshold ?? 70;
-  const completers = activeStudents.filter((s) => s.completion_pct >= threshold);
+  const completers = activeStudents.filter((s) => completionPct(s.id) >= threshold);
   const nonCompletersCount = activeStudents.length - completers.length;
 
   const attendancePct =
