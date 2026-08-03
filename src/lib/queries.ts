@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import type { Status } from "@/lib/status";
 import type { AppRole } from "@/lib/auth";
@@ -205,7 +206,29 @@ function notifyStudent(payload: {
   token?: string;
 }) {
   if (typeof window === "undefined") return;
-  supabase.functions.invoke("send-student-email", { body: { ...payload, origin: window.location.origin } }).catch(() => {});
+  const origin = window.location.origin;
+  // A long-lived tab (especially with several tabs of the app open at once)
+  // can end up with a stale access token that hasn't been refreshed in the
+  // background yet — refresh explicitly so this privileged call doesn't
+  // silently fail auth on the server. Also: supabase.functions.invoke()
+  // resolves with `{ error }` rather than rejecting on a non-2xx response,
+  // so a bare .catch() (the previous approach here) never actually saw an
+  // auth failure — it only catches network-level errors.
+  supabase.auth
+    .refreshSession()
+    .then(({ error: refreshError }) => {
+      if (refreshError) {
+        toast.error("Couldn't send a notification email — your session has expired. Refresh the page and try again.");
+        return undefined;
+      }
+      return supabase.functions.invoke("send-student-email", { body: { ...payload, origin } });
+    })
+    .then((result) => {
+      if (result?.error) toast.error("A notification email failed to send.");
+    })
+    .catch(() => {
+      toast.error("A notification email failed to send.");
+    });
 }
 
 // ── trainings ────────────────────────────────────────────────────
@@ -240,6 +263,20 @@ export function useTraining(id: string) {
       if (!data) return null;
       const { instructor, ...row } = data as unknown as TrainingWithInstructorJoin;
       return { ...row, instructor_name: instructor?.full_name ?? null };
+    },
+  });
+}
+
+export function useUpdateTrainingStatus(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (status: Status) => {
+      const { error } = await supabase.from("trainings").update({ status }).eq("id", trainingId);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["training", trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["trainings"] });
     },
   });
 }
@@ -367,22 +404,6 @@ export function useAddSession(trainingId: string) {
   });
 }
 
-// Same as useAddSession, but for callers (e.g. the calendar page) that don't
-// know which training they're adding to until the user picks one at submit time.
-export function useCreateSession() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ trainingId, ...input }: NewSessionInput & { trainingId: string }) => {
-      const { error } = await supabase.from("sessions").insert({ ...input, training_id: trainingId });
-      raise(error);
-    },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["sessions", variables.trainingId] });
-      queryClient.invalidateQueries({ queryKey: ["sessions"] });
-    },
-  });
-}
-
 // ── students ─────────────────────────────────────────────────────
 
 export function useTrainingStudents(trainingId: string) {
@@ -398,6 +419,17 @@ export function useTrainingStudents(trainingId: string) {
       return data ?? [];
     },
     enabled: !!trainingId,
+  });
+}
+
+export function useAllStudents() {
+  return useQuery({
+    queryKey: ["students"],
+    queryFn: async (): Promise<StudentRow[]> => {
+      const { data, error } = await supabase.from("students").select("*");
+      raise(error);
+      return data ?? [];
+    },
   });
 }
 
@@ -438,6 +470,7 @@ export function useAddStudents(trainingId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students", trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
     },
   });
 }
@@ -451,6 +484,7 @@ export function useUpdateStudentStatus(trainingId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students", trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
     },
   });
 }
@@ -940,25 +974,30 @@ export function useSaveSurveyQuestions(level: "l1" | "l3") {
   });
 }
 
+// Shared by the manual "Send / resend" button (useSendSurveys) and the
+// automatic completion-triggered send (see useAutoSendSurveys).
+export async function sendSurveysToStudents(trainingId: string, level: "l1" | "l3", studentIds: string[]) {
+  if (studentIds.length === 0) return [] as SurveyResponseRow[];
+  const { data, error } = await supabase
+    .from("survey_responses")
+    .upsert(
+      studentIds.map((studentId) => ({ training_id: trainingId, student_id: studentId, level })),
+      { onConflict: "training_id,student_id,level" },
+    )
+    .select("*");
+  raise(error);
+
+  for (const r of data ?? []) {
+    notifyStudent({ type: "survey", training_id: trainingId, student_id: r.student_id, level: r.level, token: r.share_token });
+  }
+  return data ?? [];
+}
+
 export function useSendSurveys(trainingId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ level, studentIds }: { level: "l1" | "l3"; studentIds: string[] }) => {
-      if (studentIds.length === 0) return [] as SurveyResponseRow[];
-      const { data, error } = await supabase
-        .from("survey_responses")
-        .upsert(
-          studentIds.map((studentId) => ({ training_id: trainingId, student_id: studentId, level })),
-          { onConflict: "training_id,student_id,level" },
-        )
-        .select("*");
-      raise(error);
-
-      for (const r of data ?? []) {
-        notifyStudent({ type: "survey", training_id: trainingId, student_id: r.student_id, level: r.level, token: r.share_token });
-      }
-      return data ?? [];
-    },
+    mutationFn: ({ level, studentIds }: { level: "l1" | "l3"; studentIds: string[] }) =>
+      sendSurveysToStudents(trainingId, level, studentIds),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["survey-responses", trainingId] });
     },

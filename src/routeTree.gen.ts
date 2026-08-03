@@ -15,6 +15,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppTeamRouteImport } from './routes/_app.team'
 import { Route as AppSurveysRouteImport } from './routes/_app.surveys'
+import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppPayoutRouteImport } from './routes/_app.payout'
 import { Route as AppDashboardRouteImport } from './routes/_app.dashboard'
 import { Route as AppCalendarRouteImport } from './routes/_app.calendar'
@@ -53,6 +54,11 @@ const AppTeamRoute = AppTeamRouteImport.update({
 const AppSurveysRoute = AppSurveysRouteImport.update({
   id: '/surveys',
   path: '/surveys',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPayoutRoute = AppPayoutRouteImport.update({
@@ -113,6 +119,7 @@ export interface FileRoutesByFullPath {
   '/calendar': typeof AppCalendarRoute
   '/dashboard': typeof AppDashboardRoute
   '/payout': typeof AppPayoutRoute
+  '/settings': typeof AppSettingsRoute
   '/surveys': typeof AppSurveysRoute
   '/team': typeof AppTeamRoute
   '/trainings/$id': typeof AppTrainingsIdRoute
@@ -130,6 +137,7 @@ export interface FileRoutesByTo {
   '/calendar': typeof AppCalendarRoute
   '/dashboard': typeof AppDashboardRoute
   '/payout': typeof AppPayoutRoute
+  '/settings': typeof AppSettingsRoute
   '/surveys': typeof AppSurveysRoute
   '/team': typeof AppTeamRoute
   '/trainings/$id': typeof AppTrainingsIdRoute
@@ -149,6 +157,7 @@ export interface FileRoutesById {
   '/_app/calendar': typeof AppCalendarRoute
   '/_app/dashboard': typeof AppDashboardRoute
   '/_app/payout': typeof AppPayoutRoute
+  '/_app/settings': typeof AppSettingsRoute
   '/_app/surveys': typeof AppSurveysRoute
   '/_app/team': typeof AppTeamRoute
   '/_app/trainings/$id': typeof AppTrainingsIdRoute
@@ -168,6 +177,7 @@ export interface FileRouteTypes {
     | '/calendar'
     | '/dashboard'
     | '/payout'
+    | '/settings'
     | '/surveys'
     | '/team'
     | '/trainings/$id'
@@ -185,6 +195,7 @@ export interface FileRouteTypes {
     | '/calendar'
     | '/dashboard'
     | '/payout'
+    | '/settings'
     | '/surveys'
     | '/team'
     | '/trainings/$id'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '/_app/calendar'
     | '/_app/dashboard'
     | '/_app/payout'
+    | '/_app/settings'
     | '/_app/surveys'
     | '/_app/team'
     | '/_app/trainings/$id'
@@ -267,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/surveys'
       fullPath: '/surveys'
       preLoaderRoute: typeof AppSurveysRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/payout': {
@@ -346,6 +365,7 @@ interface AppRouteChildren {
   AppCalendarRoute: typeof AppCalendarRoute
   AppDashboardRoute: typeof AppDashboardRoute
   AppPayoutRoute: typeof AppPayoutRoute
+  AppSettingsRoute: typeof AppSettingsRoute
   AppSurveysRoute: typeof AppSurveysRoute
   AppTeamRoute: typeof AppTeamRoute
   AppTrainingsIdRoute: typeof AppTrainingsIdRoute
@@ -357,6 +377,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppCalendarRoute: AppCalendarRoute,
   AppDashboardRoute: AppDashboardRoute,
   AppPayoutRoute: AppPayoutRoute,
+  AppSettingsRoute: AppSettingsRoute,
   AppSurveysRoute: AppSurveysRoute,
   AppTeamRoute: AppTeamRoute,
   AppTrainingsIdRoute: AppTrainingsIdRoute,

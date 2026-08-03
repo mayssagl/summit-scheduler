@@ -1,224 +1,277 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { toast } from "sonner";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { useAllSessions, useCreateSession, useTrainings } from "@/lib/queries";
+import { useTrainings, type TrainingWithInstructor } from "@/lib/queries";
 import type { Status } from "@/lib/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-const DEFAULT_TIMEZONE = "Europe/Paris";
 
 export const Route = createFileRoute("/_app/calendar")({ component: CalendarView });
 
-const STATUS_DOT: Record<Status, string> = {
-  Pending: "bg-[color:var(--status-pending)]",
-  Scheduled: "bg-[color:var(--status-scheduled)]",
-  Active: "bg-[color:var(--status-active)]",
-  Completed: "bg-[color:var(--status-completed)]",
-  Cancelled: "bg-[color:var(--status-cancelled)]",
+// Same underlying hue as the tinted StatusBadge pills used elsewhere, blended
+// lighter than a fully-saturated fill so a whole week of stacked bars doesn't
+// read as solid stripes.
+const BLOCK_COLOR: Record<Status, string> = {
+  Pending: "bg-[color-mix(in_oklab,var(--status-pending)_65%,white)] text-[color:var(--status-pending-fg)]",
+  Scheduled: "bg-[color-mix(in_oklab,var(--status-scheduled)_65%,white)] text-[color:var(--status-scheduled-fg)]",
+  Active: "bg-[color-mix(in_oklab,var(--status-active)_65%,white)] text-[color:var(--status-active-fg)]",
+  Completed: "bg-[color-mix(in_oklab,var(--status-completed)_65%,white)] text-[color:var(--status-completed-fg)]",
+  Cancelled: "bg-[color-mix(in_oklab,var(--status-cancelled)_65%,white)] text-[color:var(--status-cancelled-fg)]",
 };
 
-function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MAX_LANES = 3;
+
 function daysInMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); }
 // toISOString() converts to UTC first, which shifts local midnight back a day
 // in any timezone ahead of UTC (e.g. Europe/Paris) — format from local parts instead.
 function toLocalDateStr(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+function formatShort(dateStr: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en", { day: "numeric", month: "short" });
+}
+
+interface Segment {
+  training: TrainingWithInstructor;
+  startCol: number;
+  endCol: number;
+  lane: number;
+  isRealStart: boolean;
+  isRealEnd: boolean;
+}
+
+// Greedy interval-scheduling lane assignment: each training gets the first
+// lane whose last-placed segment ends before this one starts.
+function layoutWeek(weekDateStrs: string[], trainings: TrainingWithInstructor[]): { segments: Segment[]; overflowTrainings: TrainingWithInstructor[] } {
+  const spans = trainings
+    .filter((t) => t.start_date && t.end_date)
+    .map((t) => {
+      const startCol = weekDateStrs.findIndex((ds) => ds >= t.start_date! && ds <= t.end_date!);
+      if (startCol === -1) return null;
+      let endCol = startCol;
+      for (let i = startCol; i < weekDateStrs.length; i++) {
+        if (weekDateStrs[i] <= t.end_date!) endCol = i;
+        else break;
+      }
+      return {
+        training: t,
+        startCol,
+        endCol,
+        isRealStart: weekDateStrs[startCol] === t.start_date,
+        isRealEnd: weekDateStrs[endCol] === t.end_date,
+      };
+    })
+    .filter((s): s is NonNullable<typeof s> => s !== null)
+    .sort((a, b) => a.startCol - b.startCol || a.training.name.localeCompare(b.training.name));
+
+  const laneEnds: number[] = [];
+  const segments: Segment[] = [];
+  const overflowTrainings: TrainingWithInstructor[] = [];
+  for (const s of spans) {
+    let lane = laneEnds.findIndex((end) => end < s.startCol);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(s.endCol);
+    } else {
+      laneEnds[lane] = s.endCol;
+    }
+    if (lane >= MAX_LANES) {
+      overflowTrainings.push(s.training);
+      continue;
+    }
+    segments.push({ ...s, lane });
+  }
+  return { segments, overflowTrainings };
+}
 
 function CalendarView() {
-  const { role } = useAuth();
-  const { data: trainings = [] } = useTrainings();
-  const { data: sessions = [] } = useAllSessions();
-  const createSession = useCreateSession();
+  const { role, user } = useAuth();
+  const { data: allTrainings = [] } = useTrainings();
   const [cursor, setCursor] = useState(new Date());
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState({ trainingId: "", date: "", start_time: "09:00", end_time: "17:00", venue: "" });
-  const canCreate = role !== "instructor";
+  // `new Date()` computed during the initial render can reflect the server's
+  // clock/timezone (SSR) rather than the visitor's — re-derive "today" once
+  // the client has actually mounted so the highlighted day is never stale.
+  // Also re-anchor the viewed month to "now" on every visit to this page,
+  // so browsing to a different month, navigating away, then coming back
+  // always lands on the current month instead of wherever it was left.
+  const [today, setToday] = useState(new Date());
+  useEffect(() => {
+    const now = new Date();
+    setToday(now);
+    setCursor(now);
+  }, []);
 
-  function openNewEvent(date?: Date) {
-    if (trainings.length === 0) {
-      toast.error("Create a training first — events are sessions attached to a training.");
-      return;
-    }
-    setForm({
-      trainingId: trainings[0]?.id ?? "",
-      date: date ? toLocalDateStr(date) : "",
-      start_time: "09:00",
-      end_time: "17:00",
-      venue: "",
-    });
-    setDialogOpen(true);
-  }
-
-  async function handleCreate() {
-    if (!form.trainingId || !form.date) return;
-    try {
-      await createSession.mutateAsync({
-        trainingId: form.trainingId,
-        date: form.date,
-        start_time: form.start_time,
-        end_time: form.end_time,
-        timezone: DEFAULT_TIMEZONE,
-        venue: form.venue,
-        module: "",
-      });
-      toast.success("Event added to calendar");
-      setDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't add event");
-    }
-  }
-
-  const sessionDatesByTraining = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    for (const s of sessions) {
-      if (!map.has(s.training_id)) map.set(s.training_id, new Set());
-      map.get(s.training_id)!.add(s.date);
-    }
-    return map;
-  }, [sessions]);
+  const trainings = useMemo(() => {
+    if (role === "admin") return allTrainings;
+    if (role === "delivery_manager") return allTrainings.filter((t) => t.created_by === user?.id);
+    if (role === "instructor") return allTrainings.filter((t) => t.instructor_id === user?.id);
+    return [];
+  }, [allTrainings, role, user]);
 
   const month = cursor.getMonth();
   const year = cursor.getFullYear();
-  const first = startOfMonth(cursor);
-  const firstWeekday = (first.getDay() + 6) % 7; // Mon=0
-  const total = daysInMonth(cursor);
-  const cells: { date: Date | null }[] = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push({ date: null });
-  for (let i = 1; i <= total; i++) cells.push({ date: new Date(year, month, i) });
-  while (cells.length % 7 !== 0) cells.push({ date: null });
+  const firstOfMonth = new Date(year, month, 1);
+  const firstWeekday = (firstOfMonth.getDay() + 6) % 7; // Mon=0
+  const totalDays = daysInMonth(cursor);
+  const gridStart = new Date(year, month, 1 - firstWeekday);
+  const totalCells = Math.ceil((firstWeekday + totalDays) / 7) * 7;
 
-  const blocksFor = (d: Date) => {
-    const ds = toLocalDateStr(d);
-    return trainings.filter(
-      (t) =>
-        sessionDatesByTraining.get(t.id)?.has(ds) ||
-        (t.start_date && t.end_date && ds >= t.start_date && ds <= t.end_date),
-    );
-  };
+  const weeks = useMemo(() => {
+    const cells: { date: Date; inMonth: boolean }[] = [];
+    for (let i = 0; i < totalCells; i++) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      cells.push({ date: d, inMonth: d.getMonth() === month });
+    }
+    const rows: { date: Date; inMonth: boolean }[][] = [];
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+    return rows.map((week) => {
+      const weekDateStrs = week.map((c) => toLocalDateStr(c.date));
+      const { segments, overflowTrainings } = layoutWeek(weekDateStrs, trainings);
+      return { week, segments, overflowTrainings };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalCells, gridStart.getTime(), month, trainings]);
+
+  const isCurrentMonth = month === today.getMonth() && year === today.getFullYear();
+  const hasAnyTrainingsThisMonth = weeks.some((w) => w.segments.length > 0 || w.overflowTrainings.length > 0);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
-          <p className="text-sm text-muted-foreground">{role === "instructor" ? "Your assigned sessions." : "All trainings, color-coded by status."}</p>
-        </div>
-        {canCreate && (
-          <Button onClick={() => openNewEvent()}>
-            <Plus className="mr-1 h-4 w-4" />New event
-          </Button>
-        )}
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+        <p className="text-sm text-muted-foreground">
+          {role === "instructor" ? "Trainings assigned to you." : role === "delivery_manager" ? "Trainings you created." : "All trainings, color-coded by status."}
+        </p>
       </div>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>{cursor.toLocaleString("en", { month: "long", year: "numeric" })}</CardTitle>
+      <Card className="overflow-hidden shadow-md">
+        <CardHeader className="flex flex-row items-center justify-between gap-4 border-b bg-muted/30 py-5">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+              <CalendarDays className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-xl">
+                {cursor.toLocaleString("en", { month: "long" })} <span className="font-normal text-muted-foreground">{year}</span>
+              </CardTitle>
+              {isCurrentMonth && <p className="text-xs font-medium text-primary">You're viewing the current month</p>}
+            </div>
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft className="h-4 w-4" /></Button>
-            <Button variant="outline" onClick={() => setCursor(new Date())}>Today</Button>
+            <Button variant="outline" onClick={() => setCursor(new Date())} title={`Today: ${today.toDateString()}`}>Today</Button>
             <Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight className="h-4 w-4" /></Button>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-7 gap-px overflow-hidden rounded-lg border bg-border text-xs">
-            {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((d) => (
-              <div key={d} className="bg-muted/50 px-2 py-2 text-center font-medium uppercase text-muted-foreground">{d}</div>
+        <CardContent className="p-0">
+          <div className="grid grid-cols-7 border-b bg-muted/40">
+            {WEEKDAYS.map((d, i) => (
+              <div
+                key={d}
+                className={cn(
+                  "px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+                  i >= 5 && "bg-muted/40",
+                )}
+              >
+                {d}
+              </div>
             ))}
-            {cells.map((c, i) => {
-              const isToday = c.date && c.date.toDateString() === new Date().toDateString();
-              const blocks = c.date ? blocksFor(c.date) : [];
-              return (
-                <div key={i} className={cn("group relative min-h-[88px] bg-card p-1.5", !c.date && "bg-muted/20")}>
-                  {c.date && (
-                    <>
-                      <div className="mb-1 flex items-center justify-between">
-                        <div className={cn("text-xs font-medium", isToday ? "inline-grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground" : "text-muted-foreground")}>{c.date.getDate()}</div>
-                        {canCreate && (
-                          <button
-                            type="button"
-                            onClick={() => openNewEvent(c.date!)}
-                            className="hidden h-4 w-4 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground group-hover:grid"
-                            aria-label="Add event"
-                          >
-                            <Plus className="h-3 w-3" />
-                          </button>
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        {blocks.slice(0, 3).map((t) => (
-                          <Link key={t.id} to="/trainings/$id" params={{ id: t.id }} className="flex items-center gap-1.5 truncate rounded px-1.5 py-0.5 text-[11px] hover:bg-muted">
-                            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[t.status])} />
-                            <span className="truncate">{t.name}</span>
-                          </Link>
-                        ))}
-                        {blocks.length > 3 && <div className="px-1.5 text-[10px] text-muted-foreground">+{blocks.length - 3} more</div>}
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
           </div>
-          <div className="mt-4 flex flex-wrap gap-3 text-xs">
-            {(["Pending","Scheduled","Active","Completed","Cancelled"] as Status[]).map((s) => (
-              <div key={s} className="flex items-center gap-1.5"><span className={cn("h-2 w-2 rounded-full", STATUS_DOT[s])} />{s}</div>
+          {weeks.map(({ week, segments, overflowTrainings }, wi) => (
+            <div key={wi} className={cn("border-b last:border-b-0", wi % 2 === 1 && "bg-muted/10")}>
+              <div className="grid grid-cols-7">
+                {week.map(({ date, inMonth }, i) => {
+                  const isToday = date.toDateString() === today.toDateString();
+                  return (
+                    <div
+                      key={date.toISOString()}
+                      className={cn(
+                        "min-h-[44px] border-r px-2.5 pt-2 last:border-r-0",
+                        !inMonth && "bg-muted/10",
+                        inMonth && i >= 5 && "bg-muted/[0.06]",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-grid h-7 w-7 place-items-center rounded-full text-sm font-semibold",
+                          isToday ? "bg-primary text-primary-foreground shadow-sm" : inMonth ? "text-foreground" : "text-muted-foreground/40",
+                        )}
+                      >
+                        {date.getDate()}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="grid auto-rows-[22px] grid-cols-7 gap-x-px gap-y-1.5 px-px pb-2 pt-1.5">
+                {segments.map((s) => (
+                  <Link
+                    key={s.training.id}
+                    to="/trainings/$id"
+                    params={{ id: s.training.id }}
+                    title={`${s.training.name} · ${s.training.client} · ${formatShort(s.training.start_date!)} – ${formatShort(s.training.end_date!)}`}
+                    className={cn(
+                      "flex min-w-0 items-center truncate px-2 py-1 text-xs font-medium shadow-sm transition-opacity hover:opacity-80",
+                      BLOCK_COLOR[s.training.status],
+                      s.isRealStart ? "rounded-l-md" : "-ml-px",
+                      s.isRealEnd ? "rounded-r-md" : "-mr-px",
+                    )}
+                    style={{ gridColumn: `${s.startCol + 1} / ${s.endCol + 2}`, gridRow: s.lane + 1 }}
+                  >
+                    <span className="truncate">{s.training.name}</span>
+                  </Link>
+                ))}
+              </div>
+              {overflowTrainings.length > 0 && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="mx-1 mb-2 rounded bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted-foreground/20"
+                    >
+                      +{overflowTrainings.length} more
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-64 p-2" align="start">
+                    <div className="space-y-0.5">
+                      {overflowTrainings.map((t) => (
+                        <Link
+                          key={t.id}
+                          to="/trainings/$id"
+                          params={{ id: t.id }}
+                          className="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                        >
+                          <span className={cn("h-2 w-2 shrink-0 rounded-full", BLOCK_COLOR[t.status].split(" ")[0])} />
+                          <span className="truncate">{t.name}</span>
+                        </Link>
+                      ))}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
+            </div>
+          ))}
+          {!hasAnyTrainingsThisMonth && (
+            <div className="flex flex-col items-center justify-center gap-1 border-t py-10 text-center">
+              <CalendarDays className="mb-1 h-6 w-6 text-muted-foreground/50" />
+              <p className="text-sm font-medium text-muted-foreground">No trainings scheduled in {cursor.toLocaleString("en", { month: "long" })}</p>
+              <p className="text-xs text-muted-foreground">Trainings you're assigned to will show up here automatically.</p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 border-t bg-muted/20 px-4 py-3 text-xs">
+            {(["Pending", "Scheduled", "Active", "Completed", "Cancelled"] as Status[]).map((s) => (
+              <span key={s} className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-medium", BLOCK_COLOR[s])}>
+                {s}
+              </span>
             ))}
           </div>
         </CardContent>
       </Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New event</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Training</Label>
-              <Select value={form.trainingId} onValueChange={(v) => setForm({ ...form, trainingId: v })}>
-                <SelectTrigger><SelectValue placeholder="Select a training" /></SelectTrigger>
-                <SelectContent>
-                  {trainings.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-3 space-y-1.5 sm:col-span-1">
-                <Label>Date</Label>
-                <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Start</Label>
-                <Input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>End</Label>
-                <Input type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Venue</Label>
-              <Input placeholder="Venue" value={form.venue} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              onClick={handleCreate}
-              disabled={!form.trainingId || !form.date || createSession.isPending}
-            >
-              {createSession.isPending ? "Adding…" : "Add event"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

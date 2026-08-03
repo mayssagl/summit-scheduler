@@ -1,11 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import {
+  sendSurveysToStudents,
   useAllAttendance,
   useAllCertificates,
   useAllGroupInsights,
   useAllSessions,
+  useAllStudents,
   useAllSurveyResponses,
   useTrainings,
 } from "@/lib/queries";
@@ -16,6 +19,13 @@ import { Activity, Award, CalendarCheck, GraduationCap, Plus, Send, Sparkles, Us
 export const Route = createFileRoute("/_app/dashboard")({ component: Dashboard });
 
 const PAYOUT_RATE = 450;
+
+// Nothing in the app ever updates sessions.status away from its DB default
+// ('Ahead'), so it can't be trusted for "has this session happened yet" —
+// derive that from the session's own date instead.
+function toLocalDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function timeAgo(date: Date) {
   const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
@@ -31,12 +41,48 @@ function timeAgo(date: Date) {
 
 function Dashboard() {
   const { role } = useAuth();
+  const queryClient = useQueryClient();
   const { data: all = [] } = useTrainings();
   const { data: sessions = [] } = useAllSessions();
   const { data: attendance = [] } = useAllAttendance();
   const { data: certificates = [] } = useAllCertificates();
   const { data: surveyResponses = [] } = useAllSurveyResponses();
   const { data: groupInsights = [] } = useAllGroupInsights();
+  const { data: allStudents = [] } = useAllStudents();
+
+  // No cron/scheduled job is available to this app, so this is a lazy
+  // check: whenever an admin/DM has the dashboard open, look for trainings
+  // that have finished (or hit the L3 one-month mark) without their survey
+  // sent yet, and send it. autoSentRef guards against double-firing (e.g.
+  // React StrictMode's double effect invocation) before the DB write we
+  // just made is reflected back in surveyResponses.
+  const autoSentRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (role === "instructor" || all.length === 0) return;
+    const todayStr = toLocalDateStr(new Date());
+    const sentL1 = new Set(surveyResponses.filter((r) => r.level === "l1").map((r) => r.training_id));
+    const sentL3 = new Set(surveyResponses.filter((r) => r.level === "l3").map((r) => r.training_id));
+
+    for (const t of all) {
+      if (!t.end_date || t.end_date >= todayStr) continue; // training hasn't finished yet
+      const activeStudentIds = allStudents.filter((s) => s.training_id === t.id && s.status === "Active").map((s) => s.id);
+      if (activeStudentIds.length === 0) continue;
+
+      const fire = (level: "l1" | "l3") => {
+        const key = `${t.id}:${level}`;
+        if (autoSentRef.current.has(key)) return;
+        autoSentRef.current.add(key);
+        sendSurveysToStudents(t.id, level, activeStudentIds)
+          .then(() => queryClient.invalidateQueries({ queryKey: ["survey-responses"] }))
+          .catch(() => autoSentRef.current.delete(key)); // allow retry on next effect run
+      };
+
+      if (!sentL1.has(t.id)) fire("l1");
+
+      const l3DueStr = toLocalDateStr(new Date(new Date(t.end_date).getTime() + 30 * 24 * 60 * 60 * 1000));
+      if (l3DueStr <= todayStr && !sentL3.has(t.id)) fire("l3");
+    }
+  }, [all, allStudents, surveyResponses, role, queryClient]);
 
   const active = all.filter((t) => t.status === "Active").length;
   const npsValues = all.filter((t) => t.nps > 0).map((t) => t.nps);
@@ -44,14 +90,15 @@ function Dashboard() {
   const totalStudents = all.reduce((a, t) => a + t.num_students, 0);
 
   const trainingsById = useMemo(() => new Map(all.map((t) => [t.id, t])), [all]);
+  const todayStr = toLocalDateStr(new Date());
 
   const nextUp = useMemo(
     () =>
       sessions
-        .filter((s) => s.status !== "Done" && trainingsById.has(s.training_id))
+        .filter((s) => s.date >= todayStr && trainingsById.has(s.training_id))
         .map((s) => ({ s, t: trainingsById.get(s.training_id)! }))
         .sort((a, b) => a.s.date.localeCompare(b.s.date))[0],
-    [sessions, trainingsById],
+    [sessions, trainingsById, todayStr],
   );
   const sessionsThisWeek = sessions.filter((s) => {
     const d = new Date(s.date);
@@ -69,20 +116,21 @@ function Dashboard() {
     return months.map(({ year, month, label }) => ({
       label,
       count: sessions.filter((s) => {
-        if (s.status !== "Done") return false;
+        if (s.date >= todayStr) return false;
         const d = new Date(s.date);
         return d.getFullYear() === year && d.getMonth() === month;
       }).length,
     }));
-  }, [sessions]);
+  }, [sessions, todayStr]);
   const maxDelivery = Math.max(1, ...monthlyDelivery.map((m) => m.count));
+  const hasAnyDelivery = monthlyDelivery.some((m) => m.count > 0);
 
   const instructorPayouts = useMemo(() => {
     const now = new Date();
     const attendedSessionIds = new Set(attendance.map((a) => a.session_id));
     const byInstructor = new Map<string, { name: string; sessions: number; unmarked: number; payout: number }>();
     for (const s of sessions) {
-      if (s.status !== "Done") continue;
+      if (s.date >= todayStr) continue;
       const d = new Date(s.date);
       if (d.getFullYear() !== now.getFullYear() || d.getMonth() !== now.getMonth()) continue;
       const t = trainingsById.get(s.training_id);
@@ -99,12 +147,12 @@ function Dashboard() {
       byInstructor.set(t.instructor_id, entry);
     }
     return Array.from(byInstructor.values()).sort((a, b) => b.payout - a.payout);
-  }, [sessions, attendance, trainingsById]);
+  }, [sessions, attendance, trainingsById, todayStr]);
 
   const pendingPayout = useMemo(() => {
     const doneByTraining = new Map<string, number>();
     for (const s of sessions) {
-      if (s.status !== "Done") continue;
+      if (s.date >= todayStr) continue;
       doneByTraining.set(s.training_id, (doneByTraining.get(s.training_id) ?? 0) + 1);
     }
     let total = 0;
@@ -117,7 +165,7 @@ function Dashboard() {
       if (t.instructor_id) instructors.add(t.instructor_id);
     }
     return { total, instructorCount: instructors.size };
-  }, [sessions, all]);
+  }, [sessions, all, todayStr]);
 
   const recentActivity = useMemo(() => {
     type EventItem = { key: string; icon: LucideIcon; text: string; time: Date };
@@ -241,26 +289,33 @@ function Dashboard() {
               <CardDescription>Last 6 months</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex h-40 items-end gap-3">
-                {monthlyDelivery.map((m, i) => (
-                  <div key={m.label} className="flex flex-1 flex-col items-center gap-2">
-                    <div
-                      className="w-full rounded-t bg-[color:var(--chart-1)]"
-                      style={{
-                        height: `${Math.max(6, (m.count / maxDelivery) * 100)}%`,
-                        backgroundColor:
-                          i === monthlyDelivery.length - 1
-                            ? "var(--primary)"
-                            : i >= monthlyDelivery.length - 3
-                              ? "var(--chart-2)"
-                              : "var(--chart-1)",
-                      }}
-                      title={`${m.count} session${m.count === 1 ? "" : "s"} delivered`}
-                    />
-                    <span className="text-xs text-muted-foreground">{m.label}</span>
-                  </div>
-                ))}
-              </div>
+              {hasAnyDelivery ? (
+                <div className="flex h-40 items-end gap-3">
+                  {monthlyDelivery.map((m, i) => (
+                    <div key={m.label} className="flex flex-1 flex-col items-center gap-2">
+                      <div
+                        className="w-full rounded-t ring-1 ring-inset ring-black/5"
+                        style={{
+                          height: `${Math.max(10, (m.count / maxDelivery) * 100)}%`,
+                          backgroundColor:
+                            i === monthlyDelivery.length - 1
+                              ? "var(--primary)"
+                              : i >= monthlyDelivery.length - 3
+                                ? "var(--chart-3)"
+                                : "var(--chart-2)",
+                        }}
+                        title={`${m.count} session${m.count === 1 ? "" : "s"} delivered`}
+                      />
+                      <span className="text-xs text-muted-foreground">{m.label}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex h-40 flex-col items-center justify-center gap-1 text-center">
+                  <p className="text-sm text-muted-foreground">No sessions with a past date in the last 6 months.</p>
+                  <p className="text-xs text-muted-foreground">This fills in once scheduled sessions actually happen.</p>
+                </div>
+              )}
             </CardContent>
             <div className="border-t px-6 py-5">
               <p className="mb-3 text-sm font-medium">Instructor payouts — {monthLabel.split(" ")[0]}</p>

@@ -113,14 +113,17 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const resendKey = Deno.env.get("RESEND_API_KEY");
-  const fromAddress = Deno.env.get("RESEND_FROM_EMAIL") || "TrainOps <onboarding@resend.dev>";
+  const sendgridKey = Deno.env.get("SENDGRID_API_KEY");
+  const fromEmail = Deno.env.get("SENDGRID_FROM_EMAIL");
 
   if (!supabaseUrl || !anonKey || !serviceKey) {
     return json({ error: "Server misconfigured: missing Supabase environment variables." }, 500);
   }
-  if (!resendKey) {
-    return json({ error: "Server misconfigured: missing RESEND_API_KEY secret." }, 500);
+  if (!sendgridKey) {
+    return json({ error: "Server misconfigured: missing SENDGRID_API_KEY secret." }, 500);
+  }
+  if (!fromEmail) {
+    return json({ error: "Server misconfigured: missing SENDGRID_FROM_EMAIL secret (must be your verified single sender)." }, 500);
   }
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -169,15 +172,20 @@ Deno.serve(async (req) => {
   const email = buildEmail(body.type, student.name, training.name, body.origin, body.level, body.phase, body.token);
   if (!email) return json({ error: "Invalid email type or missing token." }, 400);
 
-  const resendResponse = await fetch("https://api.resend.com/emails", {
+  const sendgridResponse = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${resendKey}` },
-    body: JSON.stringify({ from: fromAddress, to: [student.email], subject: email.subject, html: email.html }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${sendgridKey}` },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: student.email }] }],
+      from: { email: fromEmail, name: "TrainOps" },
+      subject: email.subject,
+      content: [{ type: "text/html", value: email.html }],
+    }),
   });
 
-  if (!resendResponse.ok) {
-    const text = await resendResponse.text().catch(() => "");
-    return json({ error: `Resend request failed (${resendResponse.status}): ${text.slice(0, 300)}` }, 502);
+  if (!sendgridResponse.ok) {
+    const text = await sendgridResponse.text().catch(() => "");
+    return json({ error: `SendGrid request failed (${sendgridResponse.status}): ${text.slice(0, 300)}` }, 502);
   }
 
   return json({ ok: true });

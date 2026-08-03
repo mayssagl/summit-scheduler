@@ -6,6 +6,7 @@ import {
   Wallet,
   ClipboardList,
   Users,
+  Settings as SettingsIcon,
   Menu,
   X,
   LogOut,
@@ -19,6 +20,7 @@ const BASE = [
   { to: "/calendar", label: "Calendar", icon: CalendarIcon },
   { to: "/trainings", label: "My trainings", icon: GraduationCap },
   { to: "/payout", label: "Payout", icon: Wallet },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
 const ADMIN_EXTRA = [
@@ -91,7 +93,7 @@ export function AppShell() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-[color:var(--sidebar)] pt-14 transition-transform lg:static lg:translate-x-0 lg:pt-0",
+          "fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-[color:var(--sidebar)] pt-14 transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:pt-0",
           open ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
         )}
       >

@@ -169,10 +169,14 @@ function InviteDialog({ label, role }: { label: string; role: AppRole }) {
     setError(null);
     setLoading(true);
     try {
+      // getSession() only reads whatever is cached in local storage, which can
+      // be a stale/expired access token if this tab has been open a while —
+      // refreshSession() actively round-trips to Supabase for a token that's
+      // guaranteed valid right now, which is what the server call below checks.
       const {
         data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) throw new Error("Not authenticated.");
+      } = await supabase.auth.refreshSession();
+      if (!session) throw new Error("Your session has expired — please sign out and sign in again.");
       const redirectTo = `${window.location.origin}/activate`;
       await inviteUser({ data: { email, fullName: name, role, accessToken: session.access_token, redirectTo } });
       queryClient.invalidateQueries({ queryKey: ["profiles", role] });

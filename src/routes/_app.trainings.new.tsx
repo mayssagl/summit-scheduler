@@ -59,9 +59,9 @@ type VenueValue = { type: "entreprise" | "gomycode" | "autre"; detail: string };
 const emptyVenue: VenueValue = { type: "entreprise", detail: "" };
 
 function formatVenue(v: VenueValue) {
-  if (v.type === "gomycode") return v.detail ? `Chez GoMyCode – ${v.detail}` : "Chez GoMyCode";
-  if (v.type === "autre") return v.detail || "Autre";
-  return "Chez entreprise";
+  if (v.type === "gomycode") return v.detail ? `GoMyCode – ${v.detail}` : "GoMyCode";
+  if (v.type === "autre") return v.detail || "Other";
+  return "Company";
 }
 
 function VenueField({ value, onChange }: { value: VenueValue; onChange: (v: VenueValue) => void }) {
@@ -70,16 +70,16 @@ function VenueField({ value, onChange }: { value: VenueValue; onChange: (v: Venu
       <Select value={value.type} onValueChange={(t) => onChange({ type: t as VenueValue["type"], detail: "" })}>
         <SelectTrigger><SelectValue /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="entreprise">Chez entreprise</SelectItem>
-          <SelectItem value="gomycode">Chez GoMyCode</SelectItem>
-          <SelectItem value="autre">Autre</SelectItem>
+          <SelectItem value="entreprise">Company</SelectItem>
+          <SelectItem value="gomycode">GoMyCode</SelectItem>
+          <SelectItem value="autre">Other</SelectItem>
         </SelectContent>
       </Select>
       {value.type === "gomycode" && (
-        <Input placeholder="Préciser le hackerspace" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
+        <Input placeholder="Specify the hackerspace" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
       )}
       {value.type === "autre" && (
-        <Input placeholder="Préciser le lieu" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
+        <Input placeholder="Specify the location" value={value.detail} onChange={(e) => onChange({ ...value, detail: e.target.value })} />
       )}
     </div>
   );

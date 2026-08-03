@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useAuth, type AppRole } from "@/lib/auth";
+import { STATUS_COLORS, deriveSessionStatus, type Status } from "@/lib/status";
 import {
   useAddResource,
   useAddSession,
@@ -18,6 +19,7 @@ import {
   useSurveyQuestions,
   useSurveyResponses,
   useUpdateStudentStatus,
+  useUpdateTrainingStatus,
   useTestAttempts,
   useTestPublication,
   useTraining,
@@ -64,7 +66,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2 } from "lucide-react";
+import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Set by the single <ManualCopyDialog /> mounted in TrainingDetail — lets this
@@ -158,6 +160,7 @@ function TrainingDetail() {
   const { id } = Route.useParams();
   const { role } = useAuth();
   const { data: training, isLoading } = useTraining(id);
+  const updateStatus = useUpdateTrainingStatus(id);
   const tabs = role === "instructor" ? INSTRUCTOR_TABS : ADMIN_TABS;
   const [tab, setTab] = useState<string>(tabs[0]);
   const [attendanceSessionId, setAttendanceSessionId] = useState<string | undefined>(undefined);
@@ -182,7 +185,25 @@ function TrainingDetail() {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-semibold tracking-tight">{training.name}</h1>
-              <StatusBadge status={training.status} />
+              {role === "instructor" ? (
+                <StatusBadge status={training.status} />
+              ) : (
+                <Select value={training.status} onValueChange={(v) => updateStatus.mutate(v as Status)}>
+                  <SelectTrigger
+                    className={cn(
+                      "h-auto w-auto gap-1 rounded-full border-0 px-2.5 py-0.5 text-xs font-medium shadow-none ring-1 ring-inset [&>span]:line-clamp-1 [&_svg]:h-3 [&_svg]:w-3 [&_svg]:opacity-70",
+                      STATUS_COLORS[training.status],
+                    )}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(["Pending", "Scheduled", "Active", "Completed", "Cancelled"] as Status[]).map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <p className="mt-1 text-sm text-muted-foreground">{training.client} · {training.country} · {training.language}</p>
           </div>
@@ -524,7 +545,14 @@ function Sessions({
                     <td className="px-4 py-3 text-muted-foreground">{s.start_time} – {s.end_time}</td>
                     <td className="px-4 py-3 text-muted-foreground">{s.venue}</td>
                     <td className="px-4 py-3 text-muted-foreground">{s.module}</td>
-                    <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", s.status === "Done" ? "bg-muted text-muted-foreground ring-border" : s.status === "Today" ? "bg-primary/15 text-primary ring-primary/30" : "bg-secondary text-secondary-foreground ring-border")}>{s.status}</span></td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const derived = deriveSessionStatus(s.date);
+                        return (
+                          <span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", derived === "Done" ? "bg-muted text-muted-foreground ring-border" : derived === "Today" ? "bg-primary/15 text-primary ring-primary/30" : "bg-secondary text-secondary-foreground ring-border")}>{derived}</span>
+                        );
+                      })()}
+                    </td>
                     {role === "instructor" && <td className="px-4 py-3 text-right"><Button size="sm" variant="outline" onClick={() => onTakeAttendance(s.id)}>Take attendance</Button></td>}
                   </tr>
                 ))}
@@ -913,6 +941,7 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
   const { data: responses = [] } = useSurveyResponses(t.id, level);
   const sendSurveys = useSendSurveys(t.id);
   const [sending, setSending] = useState(false);
+  const [viewingStudentId, setViewingStudentId] = useState<string | null>(null);
 
   const responseByStudent = useMemo(() => new Map(responses.map((r) => [r.student_id, r])), [responses]);
   const submittedCount = responses.filter((r) => r.submitted_at).length;
@@ -991,7 +1020,12 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
                       <td className="px-4 py-2 font-medium">{s.name}</td>
                       <td className="px-4 py-2">{r ? (r.submitted_at ? <StatusBadge status="Completed" /> : <StatusBadge status="Pending" />) : <span className="text-muted-foreground">Not sent</span>}</td>
                       <td className="px-4 py-2 text-right">
-                        {r && <Button variant="ghost" size="sm" onClick={() => copyShareLink(`/s/survey-${level}/${r.share_token}`)}><Copy className="mr-1 h-3.5 w-3.5" />Link</Button>}
+                        <div className="flex justify-end gap-1">
+                          {r?.submitted_at && (
+                            <Button variant="ghost" size="sm" onClick={() => setViewingStudentId(s.id)}><Eye className="mr-1 h-3.5 w-3.5" />Answers</Button>
+                          )}
+                          {r && <Button variant="ghost" size="sm" onClick={() => copyShareLink(`/s/survey-${level}/${r.share_token}`)}><Copy className="mr-1 h-3.5 w-3.5" />Link</Button>}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1001,6 +1035,31 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={!!viewingStudentId} onOpenChange={(open) => !open && setViewingStudentId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{students.find((s) => s.id === viewingStudentId)?.name}'s answers</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {questions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No questions configured.</p>
+            ) : (
+              questions.map((q, i) => {
+                const answer = responseByStudent.get(viewingStudentId ?? "")?.answers?.[q.id];
+                return (
+                  <div key={q.id}>
+                    <p className="text-sm font-medium">{i + 1}. {q.en}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {answer === undefined || answer === null || answer === "" ? "No answer" : String(answer)}
+                    </p>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1191,7 +1250,7 @@ function GroupReport({ t }: { t: TrainingWithInstructor }) {
 
 function PayoutInside({ t }: { t: TrainingWithInstructor }) {
   const { data: sessions = [] } = useTrainingSessions(t.id);
-  const sessionsDone = sessions.filter((s) => s.status === "Done").length;
+  const sessionsDone = sessions.filter((s) => deriveSessionStatus(s.date) === "Done").length;
   const rate = 450;
   return (
     <Card>
