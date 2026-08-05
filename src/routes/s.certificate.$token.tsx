@@ -28,15 +28,20 @@ function Cert() {
 
   useEffect(() => {
     let active = true;
-    supabase.rpc("get_certificate", { p_token: token }).then(({ data: result, error }) => {
-      if (!active) return;
-      if (error || !result) {
-        setStatus("invalid");
-        return;
+    (async () => {
+      try {
+        const { data: result, error } = await supabase.rpc("get_certificate", { p_token: token });
+        if (!active) return;
+        if (error || !result) {
+          setStatus("invalid");
+          return;
+        }
+        setData(result as CertificateData);
+        setStatus("ready");
+      } catch {
+        if (active) setStatus("invalid");
       }
-      setData(result as CertificateData);
-      setStatus("ready");
-    });
+    })();
     return () => {
       active = false;
     };

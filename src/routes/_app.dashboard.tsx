@@ -10,6 +10,7 @@ import {
   useAllSessions,
   useAllStudents,
   useAllSurveyResponses,
+  useProfilesByRole,
   useTrainings,
 } from "@/lib/queries";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +19,7 @@ import { Activity, Award, CalendarCheck, GraduationCap, Plus, Send, Sparkles, Us
 
 export const Route = createFileRoute("/_app/dashboard")({ component: Dashboard });
 
-const PAYOUT_RATE = 450;
+const DEFAULT_PAYOUT_RATE = 450;
 
 // Nothing in the app ever updates sessions.status away from its DB default
 // ('Ahead'), so it can't be trusted for "has this session happened yet" —
@@ -49,6 +50,8 @@ function Dashboard() {
   const { data: surveyResponses = [] } = useAllSurveyResponses();
   const { data: groupInsights = [] } = useAllGroupInsights();
   const { data: allStudents = [] } = useAllStudents();
+  const { data: instructors = [] } = useProfilesByRole("instructor");
+  const rateByInstructor = useMemo(() => new Map(instructors.map((i) => [i.id, i.payout_rate])), [instructors]);
 
   // No cron/scheduled job is available to this app, so this is a lazy
   // check: whenever an admin/DM has the dashboard open, look for trainings
@@ -142,12 +145,12 @@ function Dashboard() {
         payout: 0,
       };
       entry.sessions += 1;
-      entry.payout += PAYOUT_RATE;
+      entry.payout += rateByInstructor.get(t.instructor_id) ?? DEFAULT_PAYOUT_RATE;
       if (!attendedSessionIds.has(s.id)) entry.unmarked += 1;
       byInstructor.set(t.instructor_id, entry);
     }
     return Array.from(byInstructor.values()).sort((a, b) => b.payout - a.payout);
-  }, [sessions, attendance, trainingsById, todayStr]);
+  }, [sessions, attendance, trainingsById, todayStr, rateByInstructor]);
 
   const pendingPayout = useMemo(() => {
     const doneByTraining = new Map<string, number>();
@@ -156,16 +159,17 @@ function Dashboard() {
       doneByTraining.set(s.training_id, (doneByTraining.get(s.training_id) ?? 0) + 1);
     }
     let total = 0;
-    const instructors = new Set<string>();
+    const instructorIds = new Set<string>();
     for (const t of all) {
       if (t.status === "Completed") continue;
       const done = doneByTraining.get(t.id) ?? 0;
       if (done === 0) continue;
-      total += done * PAYOUT_RATE;
-      if (t.instructor_id) instructors.add(t.instructor_id);
+      const rate = t.instructor_id ? (rateByInstructor.get(t.instructor_id) ?? DEFAULT_PAYOUT_RATE) : DEFAULT_PAYOUT_RATE;
+      total += done * rate;
+      if (t.instructor_id) instructorIds.add(t.instructor_id);
     }
-    return { total, instructorCount: instructors.size };
-  }, [sessions, all, todayStr]);
+    return { total, instructorCount: instructorIds.size };
+  }, [sessions, all, todayStr, rateByInstructor]);
 
   const recentActivity = useMemo(() => {
     type EventItem = { key: string; icon: LucideIcon; text: string; time: Date };

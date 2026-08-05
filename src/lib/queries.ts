@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
-import type { Status } from "@/lib/status";
+import { deriveSessionStatus, type Status } from "@/lib/status";
 import type { AppRole } from "@/lib/auth";
 
 export type TrainingVenueType = "client_site" | "gomycode" | "other";
@@ -189,6 +189,9 @@ export interface ProfileRow {
   role: AppRole;
   status: "invited" | "active";
   created_at: string;
+  payout_rate: number;
+  stripe_connect_account_id: string | null;
+  stripe_onboarding_status: "not_started" | "pending" | "complete";
 }
 
 function raise(error: { message: string } | null) {
@@ -541,6 +544,22 @@ export function useTrainingCompletion(trainingId: string): TrainingCompletion {
   const presentCount = (studentId: string) => attendance.filter((a) => a.student_id === studentId && a.present).length;
   const pct = (studentId: string) => (totalSessions > 0 ? Math.round((presentCount(studentId) / totalSessions) * 100) : 0);
   return { totalSessions, presentCount, pct };
+}
+
+// trainings.attendance_rate is a DB column nothing ever writes to (same
+// class of bug as sessions.status) — derive the real rate from sessions
+// that have actually happened and students still active, instead of it.
+export function useTrainingAttendanceRate(trainingId: string): number {
+  const { data: sessions = [] } = useTrainingSessions(trainingId);
+  const { data: students = [] } = useTrainingStudents(trainingId);
+  const { data: attendance = [] } = useTrainingAttendance(trainingId);
+
+  const activeStudentIds = new Set(students.filter((s) => s.status === "Active").map((s) => s.id));
+  const doneSessionIds = new Set(sessions.filter((s) => deriveSessionStatus(s.date) === "Done").map((s) => s.id));
+  const opportunities = doneSessionIds.size * activeStudentIds.size;
+  if (opportunities === 0) return 0;
+  const presentCount = attendance.filter((a) => a.present && doneSessionIds.has(a.session_id) && activeStudentIds.has(a.student_id)).length;
+  return Math.round((presentCount / opportunities) * 100);
 }
 
 // ── certificates ─────────────────────────────────────────────────
@@ -1094,6 +1113,140 @@ export function useGenerateGroupInsights(trainingId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["group-insights", trainingId] });
+    },
+  });
+}
+
+// ── payouts (per-instructor rate, payout requests, Stripe Connect) ──
+
+async function invokeEdgeFunction<T>(name: string, body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    let message = error.message;
+    const context = (error as { context?: Response }).context;
+    if (context && typeof context.json === "function") {
+      try {
+        const parsed = await context.json();
+        if (parsed?.error) message = parsed.error;
+      } catch {
+        // no JSON body to read from — fall back to the generic error message
+      }
+    }
+    throw new Error(message);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data as T;
+}
+
+export function useUpdatePayoutRate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ instructorId, rate }: { instructorId: string; rate: number }) => {
+      const { error } = await supabase.from("profiles").update({ payout_rate: rate }).eq("id", instructorId);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["profiles", "instructor"] });
+    },
+  });
+}
+
+interface PayoutRequestBase {
+  id: string;
+  instructor_id: string;
+  amount: number;
+  currency: string;
+  period_start: string | null;
+  period_end: string | null;
+  status: "requested" | "processing" | "paid" | "failed";
+  stripe_transfer_id: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayoutRequestRow extends PayoutRequestBase {
+  instructor_name: string | null;
+}
+
+type PayoutRequestJoin = PayoutRequestBase & { instructor: { full_name: string } | null };
+
+// Admins see every request (RLS); instructors only see their own.
+export function usePayoutRequests() {
+  return useQuery({
+    queryKey: ["payout-requests"],
+    queryFn: async (): Promise<PayoutRequestRow[]> => {
+      const { data, error } = await supabase
+        .from("payout_requests")
+        .select("*, instructor:profiles!payout_requests_instructor_id_fkey(full_name)")
+        .order("created_at", { ascending: false });
+      raise(error);
+      return ((data ?? []) as unknown as PayoutRequestJoin[]).map(({ instructor, ...row }) => ({
+        ...row,
+        instructor_name: instructor?.full_name ?? null,
+      }));
+    },
+  });
+}
+
+export function useCreatePayoutRequest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { instructorId: string; amount: number; periodStart: string; periodEnd: string }) => {
+      const { error } = await supabase.from("payout_requests").insert({
+        instructor_id: input.instructorId,
+        amount: input.amount,
+        period_start: input.periodStart,
+        period_end: input.periodEnd,
+        status: "requested",
+      });
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["payout-requests"] });
+    },
+  });
+}
+
+// Admin-only: moves a request to 'processing' and asks Stripe to actually
+// transfer funds to the instructor's connected account. The edge function
+// updates the row to 'paid' or 'failed' once Stripe responds/webhooks back.
+export function useTriggerPayout() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payoutRequestId: string) => {
+      await invokeEdgeFunction("stripe-create-payout", { payout_request_id: payoutRequestId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["payout-requests"] });
+    },
+  });
+}
+
+export function useMarkPayoutRequest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, status, failureReason }: { id: string; status: "paid" | "failed"; failureReason?: string }) => {
+      const { error } = await supabase
+        .from("payout_requests")
+        .update({ status, failure_reason: failureReason ?? null })
+        .eq("id", id);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["payout-requests"] });
+    },
+  });
+}
+
+// Kicks off Stripe Connect Express onboarding for the current instructor and
+// returns a one-time hosted onboarding URL to redirect them to.
+export function useStripeOnboard() {
+  return useMutation({
+    mutationFn: async () => {
+      if (typeof window === "undefined") throw new Error("Not available during server rendering.");
+      const { url } = await invokeEdgeFunction<{ url: string }>("stripe-connect-onboard", { origin: window.location.origin });
+      return url;
     },
   });
 }

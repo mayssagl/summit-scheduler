@@ -17,11 +17,33 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 function Settings() {
-  const { user, fullName, role } = useAuth();
+  const { user, fullName, role, refreshProfile } = useAuth();
+
+  const [name, setName] = useState("");
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const [email, setEmail] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
+
+  async function handleNameSubmit(e: FormEvent) {
+    e.preventDefault();
+    setNameError(null);
+    if (!name.trim() || !user) return;
+    setNameSaving(true);
+    try {
+      const { error } = await supabase.from("profiles").update({ full_name: name.trim() }).eq("id", user.id);
+      if (error) throw error;
+      await refreshProfile();
+      toast.success("Name updated.");
+      setName("");
+    } catch (err) {
+      setNameError(err instanceof Error ? err.message : "Failed to update name.");
+    } finally {
+      setNameSaving(false);
+    }
+  }
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -83,6 +105,20 @@ function Settings() {
           <p><span className="text-muted-foreground">Name:</span> {fullName || "—"}</p>
           <p><span className="text-muted-foreground">Email:</span> {user?.email}</p>
           <p><span className="text-muted-foreground">Role:</span> {role ? ROLE_LABEL[role] : "—"}</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Change name</CardTitle></CardHeader>
+        <CardContent>
+          <form className="space-y-3" onSubmit={handleNameSubmit}>
+            <div className="space-y-1.5">
+              <Label>New name</Label>
+              <Input type="text" placeholder={fullName ?? ""} value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            {nameError && <p role="alert" className="text-sm text-destructive">{nameError}</p>}
+            <Button type="submit" disabled={nameSaving}>{nameSaving ? "Saving…" : "Update name"}</Button>
+          </form>
         </CardContent>
       </Card>
 

@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { RoleRoute } from "@/components/role-route";
-import { useProfilesByRole, useTrainings } from "@/lib/queries";
+import { useProfilesByRole, useTrainings, useUpdatePayoutRate } from "@/lib/queries";
 import { supabase } from "@/lib/supabase";
 import { inviteUser } from "@/lib/invite-user";
 import type { AppRole } from "@/lib/auth";
@@ -119,9 +120,10 @@ function Team() {
           {profile && (
             <Card>
               <CardHeader><CardTitle className="text-base">{profile.full_name}</CardTitle></CardHeader>
-              <CardContent className="grid gap-4 sm:grid-cols-2">
+              <CardContent className="grid gap-4 sm:grid-cols-3">
                 <Tile label="NPS trend" value={profileStats?.nps ?? 0} icon />
                 <Tile label="Avg learning gain" value={`+${profileStats?.learningGain ?? 0}%`} />
+                <PayoutRateTile instructorId={profile.id} rate={profile.payout_rate} />
               </CardContent>
             </Card>
           )}
@@ -153,6 +155,44 @@ function Tile({ label, value, icon }: { label: string; value: React.ReactNode; i
       <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
       <div className="mt-1 flex items-baseline gap-2 text-2xl font-semibold">{value}{icon && <TrendingUp className="h-4 w-4 text-[color:var(--status-active-fg)]" />}</div>
     </div>
+  );
+}
+
+function PayoutRateTile({ instructorId, rate }: { instructorId: string; rate: number }) {
+  const updateRate = useUpdatePayoutRate();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(rate));
+
+  async function handleSave() {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    try {
+      await updateRate.mutateAsync({ instructorId, rate: parsed });
+      toast.success("Payout rate updated.");
+      setEditing(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update payout rate.");
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="rounded-lg border p-4">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">Payout rate / session</p>
+        <div className="mt-1 flex items-center gap-2">
+          <Input type="number" min={0} value={value} onChange={(e) => setValue(e.target.value)} className="h-8 w-24" autoFocus />
+          <Button size="sm" onClick={handleSave} disabled={updateRate.isPending}>Save</Button>
+          <Button size="sm" variant="ghost" onClick={() => { setEditing(false); setValue(String(rate)); }}>Cancel</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button type="button" onClick={() => setEditing(true)} className="rounded-lg border p-4 text-left transition hover:bg-muted/40">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">Payout rate / session</p>
+      <div className="mt-1 text-2xl font-semibold">{rate.toLocaleString()}</div>
+    </button>
   );
 }
 

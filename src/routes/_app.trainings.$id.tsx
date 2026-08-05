@@ -33,7 +33,8 @@ import {
   useUnpublishTest,
   useUpdateCertificateTemplate,
   useUpdateTestQuestion,
-  useUpdateTrainingModules,
+  useProfilesByRole,
+  useTrainingAttendanceRate,
   computeModuleScores,
   uploadTrainingFile,
   type GroupInsightsContent,
@@ -45,7 +46,6 @@ import {
 } from "@/lib/queries";
 import { downloadCertificate, downloadCertificatesBundle, downloadGroupReport } from "@/lib/export-html";
 import { StatusBadge } from "@/components/status-badge";
-import { ModuleChips } from "@/components/module-chips";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -263,6 +263,8 @@ function Overview({ t }: { t: TrainingWithInstructor }) {
   const { data: sessions = [] } = useTrainingSessions(t.id);
   const { data: students = [] } = useTrainingStudents(t.id);
   const enrolled = students.filter((s) => s.status !== "Dropped").length;
+  const attendanceRate = useTrainingAttendanceRate(t.id);
+
   const initials = t.instructor_name
     ? t.instructor_name.split(" ").map((p) => p[0]).join("")
     : "—";
@@ -300,101 +302,12 @@ function Overview({ t }: { t: TrainingWithInstructor }) {
             <Progress value={t.num_students ? (enrolled / t.num_students) * 100 : 0} />
           </div>
           <div>
-            <div className="mb-1.5 flex justify-between text-sm"><span>Attendance</span><span className="font-medium">{t.attendance_rate}%</span></div>
-            <Progress value={t.attendance_rate} />
+            <div className="mb-1.5 flex justify-between text-sm"><span>Attendance</span><span className="font-medium">{attendanceRate}%</span></div>
+            <Progress value={attendanceRate} />
           </div>
         </CardContent>
       </Card>
-      <TrainingModulesCard t={t} />
     </div>
-  );
-}
-
-// Chapters of the training (e.g. "1. Framing", "2. Anchoring") — editable
-// here, referenced by session.module and tests.module elsewhere. Those
-// references store the module text verbatim and don't cascade, so removing
-// a module still in use needs a confirmation, not a silent rename/delete.
-function TrainingModulesCard({ t }: { t: TrainingWithInstructor }) {
-  const { data: sessions = [] } = useTrainingSessions(t.id);
-  const { data: preTests = [] } = useTrainingTests(t.id, "pre");
-  const { data: postTests = [] } = useTrainingTests(t.id, "post");
-  const updateModules = useUpdateTrainingModules(t.id);
-  const [draft, setDraft] = useState<string[]>(t.modules);
-  const [pendingRemoval, setPendingRemoval] = useState<{
-    next: string[];
-    refs: { name: string; sessionCount: number; questionCount: number }[];
-  } | null>(null);
-
-  useEffect(() => setDraft(t.modules), [t.modules]);
-
-  function referencesFor(name: string) {
-    const sessionCount = sessions.filter((s) => s.module === name).length;
-    const questionCount = [...preTests, ...postTests].filter((q) => q.module === name).length;
-    return { name, sessionCount, questionCount };
-  }
-
-  function handleChange(next: string[]) {
-    const removed = draft.filter((m) => !next.includes(m));
-    const refs = removed.map(referencesFor).filter((r) => r.sessionCount > 0 || r.questionCount > 0);
-    if (refs.length > 0) {
-      setPendingRemoval({ next, refs });
-      return;
-    }
-    setDraft(next);
-  }
-
-  const dirty = JSON.stringify(draft) !== JSON.stringify(t.modules);
-
-  async function handleSave() {
-    try {
-      await updateModules.mutateAsync(draft);
-      toast.success("Modules updated");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to update modules");
-    }
-  }
-
-  return (
-    <Card className="lg:col-span-3">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-base">Modules</CardTitle>
-        {dirty && (
-          <Button size="sm" onClick={handleSave} disabled={updateModules.isPending}>
-            {updateModules.isPending ? "Saving…" : "Save changes"}
-          </Button>
-        )}
-      </CardHeader>
-      <CardContent>
-        <ModuleChips value={draft} onChange={handleChange} />
-      </CardContent>
-
-      <AlertDialog open={pendingRemoval !== null} onOpenChange={(open) => !open && setPendingRemoval(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove a module still in use?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingRemoval?.refs.map((r) => (
-                <span key={r.name} className="block">
-                  "{r.name}" is used by {r.sessionCount} session{r.sessionCount === 1 ? "" : "s"} and {r.questionCount} question{r.questionCount === 1 ? "" : "s"}.
-                </span>
-              ))}
-              {" "}Removing it here won't change those — they'll keep showing the old module text, it just won't be selectable for new sessions or questions anymore.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingRemoval(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (pendingRemoval) setDraft(pendingRemoval.next);
-                setPendingRemoval(null);
-              }}
-            >
-              Remove anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </Card>
   );
 }
 
@@ -1188,6 +1101,7 @@ function insightCards(content: GroupInsightsContent) {
 function GroupReport({ t }: { t: TrainingWithInstructor }) {
   const { data: existing, isLoading } = useGroupInsights(t.id);
   const generate = useGenerateGroupInsights(t.id);
+  const attendanceRate = useTrainingAttendanceRate(t.id);
 
   const content = generate.data ?? existing?.content ?? null;
 
@@ -1204,7 +1118,7 @@ function GroupReport({ t }: { t: TrainingWithInstructor }) {
     if (!content) return;
     downloadGroupReport({
       trainingName: t.name,
-      attendanceRate: t.attendance_rate,
+      attendanceRate,
       learningGain: t.learning_gain,
       nps: t.nps,
       insights: insightCards(content),
@@ -1220,7 +1134,7 @@ function GroupReport({ t }: { t: TrainingWithInstructor }) {
         <Button onClick={handleDownload} disabled={!content}><Download className="mr-1 h-4 w-4" />Download PDF</Button>
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
-        <StatTile label="Attendance" value={`${t.attendance_rate}%`} />
+        <StatTile label="Attendance" value={`${attendanceRate}%`} />
         <StatTile label="Learning gain" value={`+${t.learning_gain}%`} />
         <StatTile label="NPS" value={t.nps} />
       </div>
@@ -1250,8 +1164,9 @@ function GroupReport({ t }: { t: TrainingWithInstructor }) {
 
 function PayoutInside({ t }: { t: TrainingWithInstructor }) {
   const { data: sessions = [] } = useTrainingSessions(t.id);
+  const { data: instructors = [] } = useProfilesByRole("instructor");
   const sessionsDone = sessions.filter((s) => deriveSessionStatus(s.date) === "Done").length;
-  const rate = 450;
+  const rate = t.instructor_id ? (instructors.find((i) => i.id === t.instructor_id)?.payout_rate ?? 450) : 450;
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">

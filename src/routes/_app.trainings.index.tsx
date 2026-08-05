@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useAllSessions, useTrainings } from "@/lib/queries";
+import { deriveSessionStatus } from "@/lib/status";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ function TrainingsList() {
   const nextSessionByTraining = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of sessions) {
-      if (s.status === "Done") continue;
+      if (deriveSessionStatus(s.date) === "Done") continue;
       const current = map.get(s.training_id);
       if (!current || s.date < current) map.set(s.training_id, s.date);
     }

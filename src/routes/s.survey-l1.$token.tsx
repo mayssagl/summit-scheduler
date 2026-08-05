@@ -24,16 +24,24 @@ function L1() {
 
   useEffect(() => {
     let active = true;
-    supabase.rpc("get_survey_response", { p_token: token }).then(({ data: result, error }) => {
-      if (!active) return;
-      if (error || !result) {
-        setStatus("invalid");
-        return;
+    (async () => {
+      try {
+        const { data: result, error } = await supabase.rpc("get_survey_response", { p_token: token });
+        if (!active) return;
+        if (error || !result) {
+          setStatus("invalid");
+          return;
+        }
+        const parsed = result as SurveyData;
+        setData(parsed);
+        setStatus(parsed.submitted ? "done" : "ready");
+      } catch {
+        // A rejected promise (network error, etc.) isn't the { error } shape
+        // above and was previously left unhandled — this page just stayed on
+        // "loading" forever instead of showing the expired-link state.
+        if (active) setStatus("invalid");
       }
-      const parsed = result as SurveyData;
-      setData(parsed);
-      setStatus(parsed.submitted ? "done" : "ready");
-    });
+    })();
     return () => {
       active = false;
     };

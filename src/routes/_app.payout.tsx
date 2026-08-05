@@ -1,21 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { useAuth } from "@/lib/auth";
-import { useAllSessions, useTrainings } from "@/lib/queries";
+import { useAllSessions, useProfilesByRole, useTrainings } from "@/lib/queries";
+import { deriveSessionStatus } from "@/lib/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const Route = createFileRoute("/_app/payout")({ component: Payout });
 
+const DEFAULT_RATE = 450;
+
 function Payout() {
   const { role } = useAuth();
-  const rate = 450;
   const { data: trainings = [] } = useTrainings();
   const { data: sessions = [] } = useAllSessions();
+  const { data: instructors = [] } = useProfilesByRole("instructor");
+
+  const rateByInstructor = useMemo(() => new Map(instructors.map((i) => [i.id, i.payout_rate])), [instructors]);
 
   const doneCountByTraining = useMemo(() => {
     const map = new Map<string, number>();
     for (const s of sessions) {
-      if (s.status !== "Done") continue;
+      if (deriveSessionStatus(s.date) !== "Done") continue;
       map.set(s.training_id, (map.get(s.training_id) ?? 0) + 1);
     }
     return map;
@@ -25,16 +30,18 @@ function Payout() {
     () =>
       trainings.map((t) => {
         const done = doneCountByTraining.get(t.id) ?? 0;
+        const rate = t.instructor_id ? (rateByInstructor.get(t.instructor_id) ?? DEFAULT_RATE) : DEFAULT_RATE;
         return {
           id: t.id,
           name: t.name,
           instructor: t.instructor_name ?? "—",
           sessions: done,
           docValue: t.po_value ?? 0,
+          rate,
           payout: done * rate,
         };
       }),
-    [trainings, doneCountByTraining],
+    [trainings, doneCountByTraining, rateByInstructor],
   );
 
   const total = rows.reduce((a, r) => a + r.payout, 0);
@@ -76,7 +83,7 @@ function Payout() {
                     {role !== "instructor" && <td className="px-4 py-3 text-muted-foreground">{r.instructor}</td>}
                     <td className="px-4 py-3">{r.sessions}</td>
                     {role !== "instructor" && <td className="px-4 py-3">{r.docValue.toLocaleString()}</td>}
-                    {role === "instructor" && <td className="px-4 py-3">{rate}</td>}
+                    {role === "instructor" && <td className="px-4 py-3">{r.rate}</td>}
                     <td className="px-4 py-3 font-semibold">{r.payout.toLocaleString()}</td>
                   </tr>
                 ))}

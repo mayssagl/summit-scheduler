@@ -44,16 +44,21 @@ function TestPage() {
 
   useEffect(() => {
     let active = true;
-    supabase.rpc("get_test_attempt", { p_token: token }).then(({ data: result, error }) => {
-      if (!active) return;
-      if (error || !result) {
-        setStatus("invalid");
-        return;
+    (async () => {
+      try {
+        const { data: result, error } = await supabase.rpc("get_test_attempt", { p_token: token });
+        if (!active) return;
+        if (error || !result) {
+          setStatus("invalid");
+          return;
+        }
+        const parsed = result as TestAttemptData;
+        setData(parsed);
+        setStatus(parsed.submitted ? "done" : "ready");
+      } catch {
+        if (active) setStatus("invalid");
       }
-      const parsed = result as TestAttemptData;
-      setData(parsed);
-      setStatus(parsed.submitted ? "done" : "ready");
-    });
+    })();
     return () => {
       active = false;
     };

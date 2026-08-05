@@ -29,6 +29,15 @@ function escapeHtml(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
+// Plain-text fallback Bird requires alongside the HTML body.
+function htmlToText(html: string) {
+  return html
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "$2 ($1)")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function wrap(title: string, bodyHtml: string, ctaLabel?: string, ctaUrl?: string) {
   return `
     <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1f2937;">
@@ -113,17 +122,15 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const sendgridKey = Deno.env.get("SENDGRID_API_KEY");
-  const fromEmail = Deno.env.get("SENDGRID_FROM_EMAIL");
+  const birdApiKey = Deno.env.get("BIRD_API_KEY");
+  const birdWorkspaceId = Deno.env.get("BIRD_WORKSPACE_ID");
+  const birdChannelId = Deno.env.get("BIRD_CHANNEL_ID");
 
   if (!supabaseUrl || !anonKey || !serviceKey) {
     return json({ error: "Server misconfigured: missing Supabase environment variables." }, 500);
   }
-  if (!sendgridKey) {
-    return json({ error: "Server misconfigured: missing SENDGRID_API_KEY secret." }, 500);
-  }
-  if (!fromEmail) {
-    return json({ error: "Server misconfigured: missing SENDGRID_FROM_EMAIL secret (must be your verified single sender)." }, 500);
+  if (!birdApiKey || !birdWorkspaceId || !birdChannelId) {
+    return json({ error: "Server misconfigured: missing BIRD_API_KEY, BIRD_WORKSPACE_ID or BIRD_CHANNEL_ID secret." }, 500);
   }
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -172,20 +179,27 @@ Deno.serve(async (req) => {
   const email = buildEmail(body.type, student.name, training.name, body.origin, body.level, body.phase, body.token);
   if (!email) return json({ error: "Invalid email type or missing token." }, 400);
 
-  const sendgridResponse = await fetch("https://api.sendgrid.com/v3/mail/send", {
+  // Bird's from-address is fixed by the email channel's own configuration —
+  // it can't be set per-message like SendGrid/Resend allowed.
+  const birdResponse = await fetch(`https://api.bird.com/workspaces/${birdWorkspaceId}/channels/${birdChannelId}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${sendgridKey}` },
+    headers: { "Content-Type": "application/json", Authorization: `AccessKey ${birdApiKey}` },
     body: JSON.stringify({
-      personalizations: [{ to: [{ email: student.email }] }],
-      from: { email: fromEmail, name: "TrainOps" },
-      subject: email.subject,
-      content: [{ type: "text/html", value: email.html }],
+      receiver: { contacts: [{ identifierValue: student.email }] },
+      body: {
+        type: "html",
+        html: {
+          metadata: { subject: email.subject },
+          html: email.html,
+          text: htmlToText(email.html),
+        },
+      },
     }),
   });
 
-  if (!sendgridResponse.ok) {
-    const text = await sendgridResponse.text().catch(() => "");
-    return json({ error: `SendGrid request failed (${sendgridResponse.status}): ${text.slice(0, 300)}` }, 502);
+  if (!birdResponse.ok) {
+    const text = await birdResponse.text().catch(() => "");
+    return json({ error: `Bird request failed (${birdResponse.status}): ${text.slice(0, 300)}` }, 502);
   }
 
   return json({ ok: true });

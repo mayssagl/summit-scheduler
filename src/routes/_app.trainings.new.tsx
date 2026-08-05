@@ -58,6 +58,14 @@ function formatSessionDate(dateStr: string) {
 type VenueValue = { type: "entreprise" | "gomycode" | "autre"; detail: string };
 const emptyVenue: VenueValue = { type: "entreprise", detail: "" };
 
+// Sessions default to whatever venue was picked for the training itself
+// (step 1), so the admin doesn't have to re-select it for every session.
+function trainingVenueDefault(venueType: TrainingVenueType, venueDetail: string): VenueValue {
+  if (venueType === "gomycode") return { type: "gomycode", detail: venueDetail };
+  if (venueType === "other") return { type: "autre", detail: venueDetail };
+  return { type: "entreprise", detail: "" };
+}
+
 function formatVenue(v: VenueValue) {
   if (v.type === "gomycode") return v.detail ? `GoMyCode – ${v.detail}` : "GoMyCode";
   if (v.type === "autre") return v.detail || "Other";
@@ -177,6 +185,13 @@ function NewTraining() {
   const [recurring, setRecurring] = useState<{ day: string; start: string; end: string; venue: VenueValue; module: string }[]>([
     { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue, module: "" },
   ]);
+
+  function handleContinueToSessions() {
+    const defaultVenue = trainingVenueDefault(venueType, venueDetail);
+    setSingleForm((f) => ({ ...f, venue: defaultVenue }));
+    setRecurring((rows) => rows.map((r) => ({ ...r, venue: defaultVenue })));
+    setStep(2);
+  }
 
   function handleAddSingle() {
     if (!singleForm.date) {
@@ -398,7 +413,7 @@ function NewTraining() {
               </Button>
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" asChild><Link to="/trainings">Cancel</Link></Button>
-                <Button onClick={() => setStep(2)} disabled={!name || !client || venueIncomplete}>
+                <Button onClick={handleContinueToSessions} disabled={!name || !client || venueIncomplete}>
                   Save & add sessions<ArrowRight className="ml-1.5 h-4 w-4" />
                 </Button>
               </div>
@@ -526,7 +541,13 @@ function NewTraining() {
                   </table>
                 </div>
                 <div className="flex justify-between">
-                  <Button variant="outline" size="sm" onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: emptyVenue, module: "" }])}><Plus className="mr-1 h-4 w-4" />Add row</Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRecurring([...recurring, { day: "Mon", start: "09:00", end: "12:00", venue: trainingVenueDefault(venueType, venueDetail), module: "" }])}
+                  >
+                    <Plus className="mr-1 h-4 w-4" />Add row
+                  </Button>
                   <p className="self-center text-xs text-muted-foreground">{weeks * recurring.length} sessions will be generated on Create.</p>
                 </div>
               </TabsContent>
