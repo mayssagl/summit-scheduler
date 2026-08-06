@@ -339,7 +339,7 @@ function NewTraining() {
               </Field>
               <Field label="Training language">
                 <Select value={language} onValueChange={(v) => setLanguage(v as "EN" | "FR")}><SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="EN">English</SelectItem><SelectItem value="FR">Français</SelectItem></SelectContent>
+                  <SelectContent><SelectItem value="EN">English</SelectItem><SelectItem value="FR">French</SelectItem></SelectContent>
                 </Select>
               </Field>
               <Field label="Number of students"><Input type="number" value={numStudents} onChange={(e) => setNumStudents(Number(e.target.value))} /></Field>
@@ -373,20 +373,7 @@ function NewTraining() {
                   <Input placeholder={docType === "po" ? "PO-2024-921" : "CTR-2024-921"} value={poRef} onChange={(e) => setPoRef(e.target.value)} />
                 </Field>
                 <Field label="Value"><Input type="number" placeholder="24000" value={poValue} onChange={(e) => setPoValue(e.target.value)} /></Field>
-                <Field label="Dates">
-                  <Input
-                    readOnly
-                    disabled
-                    className="text-muted-foreground"
-                    value={
-                      startDate && endDate
-                        ? monthShort(startDate) === monthShort(endDate)
-                          ? monthShort(startDate)
-                          : `${monthShort(startDate)}–${monthShort(endDate)}`
-                        : "Not set"
-                    }
-                  />
-                </Field>
+                
               </div>
 
               {showAttach && (

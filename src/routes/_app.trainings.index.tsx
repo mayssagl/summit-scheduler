@@ -58,7 +58,7 @@ function TrainingsList() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input placeholder="Search by name…" value={q} onChange={(e) => setQ(e.target.value)} className="sm:w-64" />
             <Select value={state} onValueChange={setState}>
-              <SelectTrigger className="sm:w-36"><SelectValue placeholder="State" /></SelectTrigger>
+              <SelectTrigger className="sm:w-36"><SelectValue placeholder="Status" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All states</SelectItem>
                 {["Pending","Scheduled","Active","Completed","Cancelled"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}

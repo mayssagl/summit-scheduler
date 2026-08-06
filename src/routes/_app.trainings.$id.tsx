@@ -8,6 +8,7 @@ import {
   useAddSession,
   useAddStudents,
   useAddTestQuestion,
+  useDeleteSession,
   useDeleteTestQuestion,
   formatTrainingVenue,
   useGenerateGroupInsights,
@@ -32,6 +33,7 @@ import {
   useTrainingCompletion,
   useUnpublishTest,
   useUpdateCertificateTemplate,
+  useUpdateSession,
   useUpdateTestQuestion,
   useProfilesByRole,
   useTrainingAttendanceRate,
@@ -44,7 +46,9 @@ import {
   type TestRow,
   type TrainingWithInstructor,
 } from "@/lib/queries";
-import { downloadCertificate, downloadCertificatesBundle, downloadGroupReport } from "@/lib/export-html";
+import { downloadCertificate, downloadCertificatesBundle, downloadCsv, downloadGroupReport } from "@/lib/export-html";
+import defaultLogoUrl from "@/assets/logo.png";
+import defaultQrUrl from "@/assets/qrcode.png";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -66,7 +70,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Award, Copy, Trash2, Eye } from "lucide-react";
+import { ArrowLeft, Plus, Upload, Download, Send, FileText, Check, X as XIcon, Copy, Trash2, Eye, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Set by the single <ManualCopyDialog /> mounted in TrainingDetail — lets this
@@ -311,7 +315,7 @@ function Overview({ t }: { t: TrainingWithInstructor }) {
   );
 }
 
-const DEFAULT_TIMEZONE = "Europe/Paris";
+const DEFAULT_TIMEZONE = "Tunisia"; // TODO: get from user profile or training location
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function nextWeekdayOnOrAfter(from: Date, targetDayIndex: number) {
@@ -338,11 +342,26 @@ function Sessions({
 }) {
   const { data: sessions = [] } = useTrainingSessions(t.id);
   const addSession = useAddSession(t.id);
+  const updateSession = useUpdateSession(t.id);
+  const deleteSession = useDeleteSession(t.id);
   const [mode, setMode] = useState<"single" | "recurring">("single");
   const [form, setForm] = useState({ date: "", start_time: "09:00", end_time: "17:00", venue: "", module: "" });
   const [weeks, setWeeks] = useState(4);
   const [recurring, setRecurring] = useState([{ day: "Mon", start: "09:00", end: "12:00", venue: "", module: "" }]);
   const [generating, setGenerating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ date: "", start_time: "", end_time: "", venue: "", module: "" });
+
+  function startEdit(s: (typeof sessions)[number]) {
+    setEditingId(s.id);
+    setEditForm({ date: s.date, start_time: s.start_time, end_time: s.end_time, venue: s.venue ?? "", module: s.module ?? "" });
+  }
+
+  async function saveEdit() {
+    if (!editingId) return;
+    await updateSession.mutateAsync({ id: editingId, ...editForm });
+    setEditingId(null);
+  }
 
   async function handleAdd() {
     if (!form.date) return;
@@ -449,26 +468,88 @@ function Sessions({
           ) : (
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                <tr><th className="px-4 py-3 text-left font-medium">Date</th><th className="px-4 py-3 text-left font-medium">Time</th><th className="px-4 py-3 text-left font-medium">Venue</th><th className="px-4 py-3 text-left font-medium">Module</th><th className="px-4 py-3 text-left font-medium">Status</th>{role === "instructor" && <th />}</tr>
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium">Date</th>
+                  <th className="px-4 py-3 text-left font-medium">Time</th>
+                  <th className="px-4 py-3 text-left font-medium">Venue</th>
+                  <th className="px-4 py-3 text-left font-medium">Module</th>
+                  <th className="px-4 py-3 text-left font-medium">Status</th>
+                  <th />
+                </tr>
               </thead>
               <tbody>
-                {sessions.map((s) => (
-                  <tr key={s.id} className="border-t">
-                    <td className="px-4 py-3">{s.date}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.start_time} – {s.end_time}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.venue}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.module}</td>
-                    <td className="px-4 py-3">
-                      {(() => {
-                        const derived = deriveSessionStatus(s.date);
-                        return (
-                          <span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", derived === "Done" ? "bg-muted text-muted-foreground ring-border" : derived === "Today" ? "bg-primary/15 text-primary ring-primary/30" : "bg-secondary text-secondary-foreground ring-border")}>{derived}</span>
-                        );
-                      })()}
-                    </td>
-                    {role === "instructor" && <td className="px-4 py-3 text-right"><Button size="sm" variant="outline" onClick={() => onTakeAttendance(s.id)}>Take attendance</Button></td>}
-                  </tr>
-                ))}
+                {sessions.map((s) => {
+                  if (editingId === s.id) {
+                    return (
+                      <tr key={s.id} className="border-t bg-muted/20">
+                        <td className="px-4 py-2"><Input type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} /></td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-1">
+                            <Input type="time" value={editForm.start_time} onChange={(e) => setEditForm({ ...editForm, start_time: e.target.value })} />
+                            <Input type="time" value={editForm.end_time} onChange={(e) => setEditForm({ ...editForm, end_time: e.target.value })} />
+                          </div>
+                        </td>
+                        <td className="px-4 py-2"><Input value={editForm.venue} onChange={(e) => setEditForm({ ...editForm, venue: e.target.value })} placeholder="Venue" /></td>
+                        <td className="px-4 py-2">
+                          <Select value={editForm.module} onValueChange={(v) => setEditForm({ ...editForm, module: v })} disabled={t.modules.length === 0}>
+                            <SelectTrigger><SelectValue placeholder={t.modules.length === 0 ? "No modules yet" : "Module"} /></SelectTrigger>
+                            <SelectContent>{t.modules.map((m, i) => <SelectItem key={m} value={m}>{i + 1}. {m}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </td>
+                        <td className="px-4 py-2" />
+                        <td className="px-4 py-2 text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+                            <Button size="sm" onClick={saveEdit} disabled={updateSession.isPending}>Save</Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return (
+                    <tr key={s.id} className="border-t">
+                      <td className="px-4 py-3">{s.date}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.start_time} – {s.end_time}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.venue}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.module}</td>
+                      <td className="px-4 py-3">
+                        {(() => {
+                          const derived = deriveSessionStatus(s.date);
+                          return (
+                            <span className={cn("rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", derived === "Done" ? "bg-muted text-muted-foreground ring-border" : derived === "Today" ? "bg-primary/15 text-primary ring-primary/30" : "bg-secondary text-secondary-foreground ring-border")}>{derived}</span>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-1">
+                          {role === "instructor" && <Button size="sm" variant="outline" onClick={() => onTakeAttendance(s.id)}>Take attendance</Button>}
+                          {role !== "instructor" && (
+                            <>
+                              <Button size="icon" variant="ghost" onClick={() => startEdit(s)}><Pencil className="h-4 w-4" /></Button>
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button size="icon" variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete this session?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This removes the session on {s.date} ({s.start_time}–{s.end_time}) along with any attendance recorded for it. This can't be undone.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction onClick={() => deleteSession.mutate(s.id)}>Delete</AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -538,17 +619,26 @@ function Students({ t, role }: { t: TrainingWithInstructor; role: AppRole | null
     e.target.value = "";
   }
 
+  function handleExport() {
+    const header = ["Name", "Email", "Dept", "Status", "Attendance %"];
+    const rows = students.map((s) => [s.name, s.email, s.dept ?? "", s.status, String(completion.pct(s.id))]);
+    downloadCsv(`students-${t.name.replace(/\s+/g, "-").toLowerCase()}`, [header, ...rows]);
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">Students <span className="ml-2 text-sm font-normal text-muted-foreground">{active} of {t.num_students}</span></CardTitle>
-        {role !== "instructor" && (
-          <div className="flex gap-2">
-            <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
-            <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}><Upload className="mr-1 h-4 w-4" />Import CSV</Button>
-            <AddStudentDialog trainingId={t.id} />
-          </div>
-        )}
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={students.length === 0}><Download className="mr-1 h-4 w-4" />Export CSV</Button>
+          {role !== "instructor" && (
+            <>
+              <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}><Upload className="mr-1 h-4 w-4" />Import CSV</Button>
+              <AddStudentDialog trainingId={t.id} />
+            </>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <table className="w-full text-sm">
@@ -679,13 +769,27 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
   const [open, setOpen] = useState(false);
   const [sentence, setSentence] = useState(t.certificate_sentence);
   const [signatoryName, setSignatoryName] = useState(t.certificate_signatory_name ?? "");
+  const [signatory2Name, setSignatory2Name] = useState(t.certificate_signatory2_name ?? "");
+  const [logoPosition, setLogoPosition] = useState<"left" | "right">(t.certificate_logo_position ?? "right");
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoCleared, setLogoCleared] = useState(false);
   const [signatureFile, setSignatureFile] = useState<File | null>(null);
+  const [signature2File, setSignature2File] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [issuing, setIssuing] = useState(false);
 
   const certByStudent = useMemo(() => new Map(certificates.map((c) => [c.student_id, c])), [certificates]);
   const previewName = students[0]?.name ?? "Student name";
+  const logoPreviewUrl = useMemo(
+    () => (logoCleared ? null : logoFile ? URL.createObjectURL(logoFile) : t.certificate_logo_url),
+    [logoCleared, logoFile, t.certificate_logo_url],
+  );
+  const hasCustomLogo = !logoCleared && (logoFile !== null || t.certificate_logo_url !== null);
+
+  function resetLogoToDefault() {
+    setLogoFile(null);
+    setLogoCleared(true);
+  }
 
   function toCertExport(student: StudentRow) {
     const cert = certByStudent.get(student.id);
@@ -695,7 +799,10 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
       sentence,
       signatoryName: signatoryName || null,
       logoUrl: t.certificate_logo_url,
+      logoPosition: t.certificate_logo_position,
       signatureUrl: t.certificate_signature_url,
+      signatory2Name: signatory2Name || null,
+      signature2Url: t.certificate_signature2_url,
       verificationId: cert ? `TO-${cert.id.slice(0, 8).toUpperCase()}` : "UNISSUED",
     };
   }
@@ -703,13 +810,17 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
   async function handleSaveTemplate() {
     setSaving(true);
     try {
-      const logoUrl = logoFile ? await uploadTrainingFile("certificates", t.id, logoFile) : t.certificate_logo_url;
+      const logoUrl = logoCleared ? null : logoFile ? await uploadTrainingFile("certificates", t.id, logoFile) : t.certificate_logo_url;
       const signatureUrl = signatureFile ? await uploadTrainingFile("certificates", t.id, signatureFile) : t.certificate_signature_url;
+      const signature2Url = signature2File ? await uploadTrainingFile("certificates", t.id, signature2File) : t.certificate_signature2_url;
       await updateTemplate.mutateAsync({
         certificate_sentence: sentence,
         certificate_signatory_name: signatoryName,
         certificate_logo_url: logoUrl,
+        certificate_logo_position: logoPosition,
         certificate_signature_url: signatureUrl,
+        certificate_signatory2_name: signatory2Name,
+        certificate_signature2_url: signature2Url,
       });
       toast.success("Certificate template saved");
       setOpen(false);
@@ -760,23 +871,63 @@ function Certificates({ t }: { t: TrainingWithInstructor }) {
         {open && (
           <CardContent className="grid gap-6 lg:grid-cols-2">
             <div className="space-y-4">
-              <div className="space-y-1.5"><Label>Partner logo (top-right)</Label><Input type="file" accept="image/*" onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)} /></div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label>Partner logo</Label>
+                    {hasCustomLogo && (
+                      <button type="button" onClick={resetLogoToDefault} className="text-xs text-muted-foreground underline-offset-2 hover:underline">
+                        Use default
+                      </button>
+                    )}
+                  </div>
+                  <Input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      setLogoFile(e.target.files?.[0] ?? null);
+                      setLogoCleared(false);
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Defaults to the GoMyCode logo when nothing is uploaded.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Logo position</Label>
+                  <Select value={logoPosition} onValueChange={(v) => setLogoPosition(v as "left" | "right")}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="left">Top left</SelectItem>
+                      <SelectItem value="right">Top right</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
               <div className="space-y-1.5"><Label>Core sentence</Label><Textarea rows={4} value={sentence} onChange={(e) => setSentence(e.target.value)} /></div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5"><Label>Signatory name</Label><Input placeholder="Jane Doe, Head of L&D" value={signatoryName} onChange={(e) => setSignatoryName(e.target.value)} /></div>
+                <div className="space-y-1.5"><Label>Signatory name (bottom left)</Label><Input placeholder="Jane Doe, Head of L&D" value={signatoryName} onChange={(e) => setSignatoryName(e.target.value)} /></div>
                 <div className="space-y-1.5"><Label>Signature image</Label><Input type="file" accept="image/*" onChange={(e) => setSignatureFile(e.target.files?.[0] ?? null)} /></div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5"><Label>Second signatory name (bottom right)</Label><Input placeholder="Optional co-signatory" value={signatory2Name} onChange={(e) => setSignatory2Name(e.target.value)} /></div>
+                <div className="space-y-1.5"><Label>Second signature image</Label><Input type="file" accept="image/*" onChange={(e) => setSignature2File(e.target.files?.[0] ?? null)} /></div>
               </div>
               <Button onClick={handleSaveTemplate} disabled={saving}>{saving ? "Saving…" : "Save template"}</Button>
             </div>
             <div className="rounded-xl border-2 border-dashed bg-card p-8 text-center">
-              <Award className="mx-auto mb-3 h-10 w-10 text-primary" />
+              <div className={cn("mb-3 flex", logoPosition === "left" ? "justify-start" : "justify-end")}>
+                <img src={logoPreviewUrl ?? defaultLogoUrl} alt="Logo" className="max-h-10" />
+              </div>
               <p className="text-xs uppercase tracking-widest text-muted-foreground">Certificate of completion</p>
               <p className="mt-3 text-2xl font-semibold">{previewName}</p>
               <p className="mx-auto mt-4 max-w-md text-sm text-muted-foreground">{sentence.replace("{student_name}", previewName).replace("{training_name}", t.name)}</p>
               <div className="mt-8 flex items-end justify-between text-xs text-muted-foreground">
                 <div className="text-left"><div className="mb-1 h-px w-32 bg-foreground/40" />{signatoryName || "Signatory"}</div>
-                <div className="text-right">ID: TO-{t.id.slice(0, 8).toUpperCase()}</div>
+                {signatory2Name ? <div className="text-right"><div className="mb-1 ml-auto h-px w-32 bg-foreground/40" />{signatory2Name}</div> : <div />}
               </div>
+              <div className="mt-2 flex justify-end">
+                <img src={defaultQrUrl} alt="QR code" className="h-10 w-10" />
+              </div>
+              <p className="mt-4 text-[10px] text-muted-foreground/70">ID: TO-{t.id.slice(0, 8).toUpperCase()}</p>
             </div>
           </CardContent>
         )}

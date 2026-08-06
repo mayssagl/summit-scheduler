@@ -1,3 +1,9 @@
+// Inlined as base64 (?inline forces this regardless of file size) so a downloaded
+// certificate HTML file stays self-contained and renders correctly even when opened
+// outside the app (no dependency on the app's own hosting to resolve the image).
+import defaultLogoUrl from "@/assets/logo.png?inline";
+import defaultQrUrl from "@/assets/qrcode.png?inline";
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -14,17 +20,29 @@ const BASE_STYLES = `
   .muted { color: #78716c; font-size: 0.875rem; }
 `;
 
-export function downloadHtml(filename: string, bodyHtml: string) {
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>${BASE_STYLES}</style></head><body>${bodyHtml}</body></html>`;
-  const blob = new Blob([doc], { type: "text/html" });
+function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename.endsWith(".html") ? filename : `${filename}.html`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+export function downloadHtml(filename: string, bodyHtml: string) {
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>${BASE_STYLES}</style></head><body>${bodyHtml}</body></html>`;
+  downloadBlob(filename.endsWith(".html") ? filename : `${filename}.html`, new Blob([doc], { type: "text/html" }));
+}
+
+function csvCell(value: string) {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+export function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  downloadBlob(filename.endsWith(".csv") ? filename : `${filename}.csv`, new Blob([csv], { type: "text/csv;charset=utf-8;" }));
 }
 
 export interface CertificateExportData {
@@ -33,27 +51,45 @@ export interface CertificateExportData {
   sentence: string;
   signatoryName: string | null;
   logoUrl: string | null;
+  logoPosition?: "left" | "right";
   signatureUrl: string | null;
+  signatory2Name?: string | null;
+  signature2Url?: string | null;
   verificationId: string;
+}
+
+function signatureBlock(name: string | null | undefined, url: string | null | undefined, fallback: string, align: "left" | "right") {
+  const lineMargin = align === "left" ? "margin-bottom:0.25rem;" : "margin-bottom:0.25rem; margin-left:auto;";
+  return `
+    <div style="text-align:${align};">
+      ${url ? `<img src="${escapeHtml(url)}" alt="Signature" style="max-height:32px; display:block; ${align === "left" ? "" : "margin-left:auto;"} margin-bottom:0.25rem;" />` : `<div style="height:1px; width:8rem; background:#a8a29e; ${lineMargin}"></div>`}
+      ${escapeHtml(name || fallback)}
+    </div>
+  `;
 }
 
 export function certificateHtml(cert: CertificateExportData) {
   const sentence = cert.sentence
     .replace("{student_name}", escapeHtml(cert.studentName))
     .replace("{training_name}", escapeHtml(cert.trainingName));
+  const logoAlign = cert.logoPosition === "left" ? "flex-start" : "flex-end";
+  const hasSecondSignature = !!(cert.signatory2Name || cert.signature2Url);
   return `
     <div class="page" style="text-align:center; border: 2px dashed #d6d3d1; border-radius: 12px; padding: 3rem;">
-      ${cert.logoUrl ? `<img src="${escapeHtml(cert.logoUrl)}" alt="Logo" style="max-height:48px; margin-bottom:1rem;" />` : ""}
+      <div style="display:flex; justify-content:${logoAlign}; margin-bottom:1rem;">
+        <img src="${escapeHtml(cert.logoUrl ?? defaultLogoUrl)}" alt="Logo" style="max-height:48px;" />
+      </div>
       <p class="muted" style="text-transform:uppercase; letter-spacing:0.1em;">Certificate of completion</p>
       <h1 style="font-size:2rem; margin-top:0.75rem;">${escapeHtml(cert.studentName)}</h1>
       <p style="max-width:32rem; margin: 1rem auto; color:#44403c;">${sentence}</p>
-      <div style="display:flex; justify-content:space-between; margin-top:3rem; font-size:0.75rem; color:#78716c;">
-        <div style="text-align:left;">
-          ${cert.signatureUrl ? `<img src="${escapeHtml(cert.signatureUrl)}" alt="Signature" style="max-height:32px; display:block; margin-bottom:0.25rem;" />` : `<div style="height:1px; width:8rem; background:#a8a29e; margin-bottom:0.25rem;"></div>`}
-          ${escapeHtml(cert.signatoryName ?? "Signatory")}
-        </div>
-        <div>ID: ${escapeHtml(cert.verificationId)}</div>
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:3rem; font-size:0.75rem; color:#78716c;">
+        ${signatureBlock(cert.signatoryName, cert.signatureUrl, "Signatory", "left")}
+        ${hasSecondSignature ? signatureBlock(cert.signatory2Name, cert.signature2Url, "Signatory", "right") : "<div></div>"}
       </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:0.5rem;">
+        <img src="${defaultQrUrl}" alt="QR code" style="height:56px; width:56px;" />
+      </div>
+      <div style="margin-top:1rem; font-size:0.7rem; color:#a8a29e;">ID: ${escapeHtml(cert.verificationId)}</div>
     </div>
   `;
 }

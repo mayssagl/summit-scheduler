@@ -4,7 +4,9 @@ import { StudentShell } from "@/components/student-card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
 import { downloadCertificate } from "@/lib/export-html";
-import { Award, Download } from "lucide-react";
+import { Download } from "lucide-react";
+import defaultLogoUrl from "@/assets/logo.png";
+import defaultQrUrl from "@/assets/qrcode.png";
 
 export const Route = createFileRoute("/s/certificate/$token")({ component: Cert });
 
@@ -15,7 +17,10 @@ interface CertificateData {
   sentence: string;
   signatory_name: string | null;
   logo_url: string | null;
+  logo_position: "left" | "right" | null;
   signature_url: string | null;
+  signatory2_name: string | null;
+  signature2_url: string | null;
   verification_id: string;
 }
 
@@ -72,18 +77,19 @@ function Cert() {
         <p className="mt-1 text-sm text-muted-foreground">You completed {data.training_name} with {data.client}.</p>
       </div>
       <div className="mt-6 rounded-xl border-2 border-dashed bg-muted/30 p-8 text-center">
-        {data.logo_url ? (
-          <img src={data.logo_url} alt="Logo" className="mx-auto mb-2 max-h-10" />
-        ) : (
-          <Award className="mx-auto mb-2 h-10 w-10 text-primary" />
-        )}
+        <div className={`mb-2 flex ${data.logo_position === "left" ? "justify-start" : "justify-end"}`}>
+          <img src={data.logo_url ?? defaultLogoUrl} alt="Logo" className="max-h-10" />
+        </div>
         <p className="text-xs uppercase tracking-widest text-muted-foreground">Certificate of completion</p>
         <p className="mt-2 text-xl font-semibold">{data.student_name}</p>
         <p className="mt-2 text-xs text-muted-foreground">{sentence}</p>
       </div>
       <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
-        <span>Verification ID</span>
-        <span className="font-mono">{data.verification_id}</span>
+        <div>
+          <span>Verification ID</span>
+          <span className="ml-1 font-mono">{data.verification_id}</span>
+        </div>
+        <img src={defaultQrUrl} alt="QR code" className="h-10 w-10" />
       </div>
       <Button
         className="mt-5 w-full"
@@ -94,7 +100,10 @@ function Cert() {
             sentence: data.sentence,
             signatoryName: data.signatory_name,
             logoUrl: data.logo_url,
+            logoPosition: data.logo_position ?? "right",
             signatureUrl: data.signature_url,
+            signatory2Name: data.signatory2_name,
+            signature2Url: data.signature2_url,
             verificationId: data.verification_id,
           })
         }

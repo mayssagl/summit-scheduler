@@ -93,7 +93,7 @@ function Surveys() {
           {lang === "EN" ? (
             <Input className="sm:col-span-10" placeholder="English" value={q.en} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, en: e.target.value } : x))} />
           ) : (
-            <Input className="sm:col-span-10" placeholder="Français" value={q.fr} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, fr: e.target.value } : x))} />
+            <Input className="sm:col-span-10" placeholder="French" value={q.fr} onChange={(e) => setList(list.map((x, j) => j === i ? { ...x, fr: e.target.value } : x))} />
           )}
           <Select value={q.type} onValueChange={(v) => setList(list.map((x, j) => j === i ? { ...x, type: v } : x))}>
             <SelectTrigger className="sm:col-span-1"><SelectValue /></SelectTrigger>

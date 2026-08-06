@@ -59,7 +59,10 @@ export interface TrainingRow {
   certificate_sentence: string;
   certificate_signatory_name: string | null;
   certificate_logo_url: string | null;
+  certificate_logo_position: "left" | "right";
   certificate_signature_url: string | null;
+  certificate_signatory2_name: string | null;
+  certificate_signature2_url: string | null;
   doc_start_date: string | null;
   po_file_url: string | null;
   created_at: string;
@@ -407,6 +410,34 @@ export function useAddSession(trainingId: string) {
   });
 }
 
+export function useUpdateSession(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...patch }: Partial<NewSessionInput> & { id: string }) => {
+      const { error } = await supabase.from("sessions").update(patch).eq("id", id);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sessions", trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+}
+
+export function useDeleteSession(trainingId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("sessions").delete().eq("id", id);
+      raise(error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sessions", trainingId] });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+}
+
 // ── students ─────────────────────────────────────────────────────
 
 export function useTrainingStudents(trainingId: string) {
@@ -636,7 +667,10 @@ export interface CertificateTemplateInput {
   certificate_sentence: string;
   certificate_signatory_name: string;
   certificate_logo_url: string | null;
+  certificate_logo_position: "left" | "right";
   certificate_signature_url: string | null;
+  certificate_signatory2_name: string;
+  certificate_signature2_url: string | null;
 }
 
 export function useUpdateCertificateTemplate(trainingId: string) {
