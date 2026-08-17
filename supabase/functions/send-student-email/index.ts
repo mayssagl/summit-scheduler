@@ -29,7 +29,7 @@ function escapeHtml(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-// Plain-text fallback Bird requires alongside the HTML body.
+// Plain-text fallback alongside the HTML body.
 function htmlToText(html: string) {
   return html
     .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "$2 ($1)")
@@ -122,15 +122,13 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const birdApiKey = Deno.env.get("BIRD_API_KEY");
-  const birdWorkspaceId = Deno.env.get("BIRD_WORKSPACE_ID");
-  const birdChannelId = Deno.env.get("BIRD_CHANNEL_ID");
+  const resendKey = Deno.env.get("RESEND_API_KEY");
 
   if (!supabaseUrl || !anonKey || !serviceKey) {
     return json({ error: "Server misconfigured: missing Supabase environment variables." }, 500);
   }
-  if (!birdApiKey || !birdWorkspaceId || !birdChannelId) {
-    return json({ error: "Server misconfigured: missing BIRD_API_KEY, BIRD_WORKSPACE_ID or BIRD_CHANNEL_ID secret." }, 500);
+  if (!resendKey) {
+    return json({ error: "Server misconfigured: missing RESEND_API_KEY secret." }, 500);
   }
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -179,27 +177,21 @@ Deno.serve(async (req) => {
   const email = buildEmail(body.type, student.name, training.name, body.origin, body.level, body.phase, body.token);
   if (!email) return json({ error: "Invalid email type or missing token." }, 400);
 
-  // Bird's from-address is fixed by the email channel's own configuration —
-  // it can't be set per-message like SendGrid/Resend allowed.
-  const birdResponse = await fetch(`https://api.bird.com/workspaces/${birdWorkspaceId}/channels/${birdChannelId}/messages`, {
+  const resendResponse = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `AccessKey ${birdApiKey}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${resendKey}` },
     body: JSON.stringify({
-      receiver: { contacts: [{ identifierValue: student.email }] },
-      body: {
-        type: "html",
-        html: {
-          metadata: { subject: email.subject },
-          html: email.html,
-          text: htmlToText(email.html),
-        },
-      },
+      from: "onboarding@resend.dev",
+      to: student.email,
+      subject: email.subject,
+      html: email.html,
+      text: htmlToText(email.html),
     }),
   });
 
-  if (!birdResponse.ok) {
-    const text = await birdResponse.text().catch(() => "");
-    return json({ error: `Bird request failed (${birdResponse.status}): ${text.slice(0, 300)}` }, 502);
+  if (!resendResponse.ok) {
+    const text = await resendResponse.text().catch(() => "");
+    return json({ error: `Resend request failed (${resendResponse.status}): ${text.slice(0, 300)}` }, 502);
   }
 
   return json({ ok: true });

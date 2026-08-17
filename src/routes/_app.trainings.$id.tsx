@@ -1035,6 +1035,8 @@ function SurveyLevelPanel({ t, level, students }: { t: TrainingWithInstructor; l
     try {
       await sendSurveys.mutateAsync({ level, studentIds: activeStudents.map((s) => s.id) });
       toast.success(`Survey links ready for ${activeStudents.length} student(s)`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to send survey links");
     } finally {
       setSending(false);
     }
